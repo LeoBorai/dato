@@ -1,73 +1,190 @@
 //! Keyword, special-command and schema completion.
+//!
+//! `analyze` decides what kinds of names fit the cursor; this module collects
+//! them from the schema, matches them against the typed fragment and ranks them.
 
 use std::sync::{Arc, RwLock};
 
 use reedline::{Completer, CompletionResult, Span, Suggestion};
 
+use super::context::{Context, Expect, analyze};
 use super::keywords::KEYWORDS;
 use crate::special::symbolic_names;
-use crate::tui::session::SchemaCache;
+use crate::tui::session::{Relation, RelationKind, SchemaCache};
 
-/// Start of the word ending at `pos`. A leading `.` or `\` belongs to the word
-/// when it begins the input or follows whitespace.
-fn word_start(line: &str, pos: usize) -> usize {
-    let head = &line[..pos];
-    let mut start = head
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| c.is_alphanumeric() || *c == '_')
-        .last()
-        .map_or(pos, |(i, _)| i);
-    if let Some(prev) = head[..start].chars().next_back()
-        && (prev == '.' || prev == '\\')
-        && head[..start - 1]
-            .chars()
-            .next_back()
-            .is_none_or(char::is_whitespace)
-    {
-        start -= 1;
-    }
-    start
+/// Most items offered at once.
+const MAX_CANDIDATES: usize = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Table,
+    View,
+    Column,
+    Keyword,
+    Command,
 }
 
-/// Candidate strings for the word before `pos`, with the word's start offset.
-pub fn candidates(cache: &SchemaCache, line: &str, pos: usize) -> (usize, Vec<String>) {
-    let start = word_start(line, pos);
-    let prefix = &line[start..pos];
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub value: String,
+    pub kind: Kind,
+    /// Shown beside the item: its kind, and for columns the type and relation.
+    pub detail: String,
+    /// Character positions of `value` that matched the typed text.
+    pub matched: Vec<usize>,
+}
+
+/// How well a name matches: prefix matches first, then tighter, then earlier.
+type Rank = (bool, usize, usize);
+
+/// Matches `prefix` (already lower-cased) as a case-insensitive subsequence of `name`.
+fn fuzzy(prefix: &[char], name: &str) -> Option<(Rank, Vec<usize>)> {
     if prefix.is_empty() {
-        return (start, Vec::new());
+        return Some(((false, 0, 0), Vec::new()));
     }
-    let lower = prefix.to_lowercase();
-    let mut out: Vec<String> = if prefix.starts_with(['.', '\\']) {
-        let mut v: Vec<String> = symbolic_names()
-            .filter(|n| n.starts_with(prefix))
-            .map(String::from)
-            .collect();
-        v.sort();
-        v
-    } else {
-        // Schema names first (they are what users usually mean), then keywords.
-        let mut names: Vec<String> = cache
-            .tables
+    let mut matched = Vec::with_capacity(prefix.len());
+    let mut wanted = prefix.iter().peekable();
+    for (i, c) in name.chars().enumerate() {
+        match wanted.peek() {
+            Some(&&p) if c.to_lowercase().next() == Some(p) => {
+                matched.push(i);
+                wanted.next();
+            }
+            Some(_) => {}
+            None => break,
+        }
+    }
+    if wanted.peek().is_some() {
+        return None;
+    }
+    let (first, last) = (matched.first().copied()?, matched.last().copied()?);
+    let span = last - first + 1;
+    Some(((first != 0 || span != prefix.len(), span, first), matched))
+}
+
+/// Candidates of one kind whose name fuzzy-matches `prefix`, best first.
+fn rank<'a>(
+    prefix: &[char],
+    items: impl Iterator<Item = (&'a str, Kind, String)>,
+) -> Vec<Candidate> {
+    let mut hits: Vec<(Rank, Candidate)> = items
+        .filter_map(|(name, kind, detail)| {
+            let (rank, matched) = fuzzy(prefix, name)?;
+            // Completing a word to itself adds nothing.
+            if !prefix.is_empty()
+                && name.chars().count() == prefix.len()
+                && rank == (false, prefix.len(), 0)
+            {
+                return None;
+            }
+            Some((
+                rank,
+                Candidate {
+                    value: name.to_string(),
+                    kind,
+                    detail,
+                    matched,
+                },
+            ))
+        })
+        .collect();
+    hits.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.value.to_lowercase().cmp(&b.1.value.to_lowercase()))
+            .then_with(|| a.1.detail.cmp(&b.1.detail))
+    });
+    hits.dedup_by(|a, b| a.1 == b.1);
+    hits.into_iter().map(|(_, c)| c).collect()
+}
+
+/// Relations whose columns are in scope at the cursor.
+fn scope<'a>(cache: &'a SchemaCache, ctx: &Context) -> Vec<&'a Relation> {
+    if let Some(q) = &ctx.qualifier {
+        let target = ctx
+            .references
             .iter()
-            .chain(&cache.columns)
-            .filter(|n| n.to_lowercase().starts_with(&lower))
-            .cloned()
-            .collect();
-        names.sort();
-        names.dedup();
-        names.extend(
-            KEYWORDS
-                .iter()
-                .filter(|k| k.to_lowercase().starts_with(&lower))
-                .map(|k| k.to_string()),
-        );
-        names
-    };
-    out.dedup();
-    // Completing a word to itself adds nothing.
-    out.retain(|c| c.to_lowercase() != lower);
-    (start, out)
+            .find(|r| {
+                r.alias
+                    .as_deref()
+                    .is_some_and(|a| a.eq_ignore_ascii_case(q))
+            })
+            .map_or(q.as_str(), |r| r.name.as_str());
+        return cache.find(target).into_iter().collect();
+    }
+    let mut found: Vec<&Relation> = Vec::new();
+    for r in ctx.references.iter().filter_map(|r| cache.find(&r.name)) {
+        if !found.iter().any(|f| std::ptr::eq(*f, r)) {
+            found.push(r);
+        }
+    }
+    if found.is_empty() {
+        // Nothing resolved: better every column than none.
+        found = cache.relations.iter().collect();
+    }
+    found
+}
+
+/// Candidates for the fragment before `pos`, with the fragment's start offset.
+pub fn candidates(cache: &SchemaCache, line: &str, pos: usize) -> (usize, Vec<Candidate>) {
+    let ctx = analyze(line, pos);
+    let prefix: Vec<char> = ctx
+        .prefix
+        .chars()
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect();
+    let mut out = Vec::new();
+    for expect in &ctx.expect {
+        match expect {
+            Expect::Relations => out.extend(rank(
+                &prefix,
+                cache.relations.iter().map(|r| {
+                    let (kind, label) = match r.kind {
+                        RelationKind::Table => (Kind::Table, "table"),
+                        RelationKind::View => (Kind::View, "view"),
+                    };
+                    (r.name.as_str(), kind, label.to_string())
+                }),
+            )),
+            Expect::Columns => out.extend(rank(
+                &prefix,
+                scope(cache, &ctx).into_iter().flat_map(|r| {
+                    r.columns.iter().map(move |c| {
+                        let detail = if c.type_name.is_empty() {
+                            format!("column ({})", r.name)
+                        } else {
+                            format!("column {} ({})", c.type_name, r.name)
+                        };
+                        (c.name.as_str(), Kind::Column, detail)
+                    })
+                }),
+            )),
+            Expect::Keywords if !prefix.is_empty() => {
+                let lower = ctx.prefix.chars().last().is_some_and(char::is_lowercase);
+                let mut hits = rank(
+                    &prefix,
+                    KEYWORDS
+                        .iter()
+                        .filter(|k| k.to_lowercase().starts_with(&ctx.prefix.to_lowercase()))
+                        .map(|k| (*k, Kind::Keyword, "keyword".to_string())),
+                );
+                if lower {
+                    for h in &mut hits {
+                        h.value = h.value.to_lowercase();
+                    }
+                }
+                out.extend(hits);
+            }
+            Expect::Keywords => {}
+            Expect::Commands => out.extend(rank(
+                &prefix,
+                symbolic_names()
+                    .filter(|n| n.starts_with(ctx.prefix.as_str()))
+                    .map(|n| (n, Kind::Command, "command".to_string())),
+            )),
+        }
+    }
+    out.truncate(MAX_CANDIDATES);
+    (ctx.start, out)
 }
 
 pub struct SqlCompleter {
@@ -83,11 +200,13 @@ impl SqlCompleter {
 impl Completer for SqlCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
         let cache = self.schema.read().unwrap();
-        let (start, names) = candidates(&cache, line, pos);
-        let suggestions: Vec<Suggestion> = names
+        let (start, found) = candidates(&cache, line, pos);
+        let suggestions: Vec<Suggestion> = found
             .into_iter()
-            .map(|value| Suggestion {
-                value,
+            .map(|c| Suggestion {
+                value: c.value,
+                description: Some(c.detail),
+                match_indices: (!c.matched.is_empty()).then_some(c.matched),
                 span: Span::new(start, pos),
                 ..Default::default()
             })
@@ -99,63 +218,204 @@ impl Completer for SqlCompleter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::ColumnInfo;
 
-    fn cache() -> SchemaCache {
-        SchemaCache {
-            tables: vec!["customers".into(), "orders".into()],
-            columns: vec!["id".into(), "total".into()],
+    fn rel(name: &str, kind: RelationKind, cols: &[(&str, &str)]) -> Relation {
+        Relation {
+            name: name.into(),
+            kind,
+            columns: cols
+                .iter()
+                .map(|(n, t)| ColumnInfo {
+                    name: (*n).into(),
+                    type_name: (*t).into(),
+                    not_null: false,
+                    default: None,
+                    primary_key: false,
+                })
+                .collect(),
         }
     }
 
-    #[test]
-    fn completes_keyword_ignoring_case() {
-        let (start, c) = candidates(&cache(), "sel", 3);
-        assert_eq!(start, 0);
-        assert_eq!(c, vec!["SELECT"]);
+    fn cache() -> SchemaCache {
+        SchemaCache {
+            relations: vec![
+                rel(
+                    "customers",
+                    RelationKind::Table,
+                    &[("id", "INTEGER"), ("email", "TEXT")],
+                ),
+                rel(
+                    "orders",
+                    RelationKind::Table,
+                    &[
+                        ("id", "INTEGER"),
+                        ("total", "REAL"),
+                        ("subtotal", "REAL"),
+                        ("order_total", "REAL"),
+                    ],
+                ),
+                rel("big_orders", RelationKind::View, &[("id", "INTEGER")]),
+            ],
+        }
+    }
+
+    /// Candidate values at the `|` cursor marker.
+    fn at(text: &str) -> (usize, Vec<Candidate>) {
+        let pos = text.find('|').expect("cursor marker");
+        let line = text.replacen('|', "", 1);
+        candidates(&cache(), &line, pos)
+    }
+
+    fn values(text: &str) -> Vec<String> {
+        at(text).1.into_iter().map(|c| c.value).collect()
     }
 
     #[test]
-    fn completes_table_name() {
-        let line = "select * from cus";
-        let (start, c) = candidates(&cache(), line, line.len());
+    fn keyword_casing_follows_input() {
+        assert_eq!(values("sel|"), vec!["select"]);
+        assert_eq!(values("SEL|"), vec!["SELECT"]);
+        assert_eq!(values("Sel|"), vec!["select"]);
+    }
+
+    #[test]
+    fn tables_after_from_without_keywords_or_columns() {
+        let (start, c) = at("select * from c|");
         assert_eq!(start, 14);
-        assert_eq!(c, vec!["customers"]);
+        assert_eq!(c.len(), 1);
+        assert_eq!((c[0].value.as_str(), c[0].kind), ("customers", Kind::Table));
     }
 
     #[test]
-    fn completes_columns() {
-        let (_, c) = candidates(&cache(), "select to", 9);
-        assert_eq!(c, vec!["total"]);
+    fn views_are_offered_as_views() {
+        let c = at("select * from big|").1;
+        assert_eq!((c[0].value.as_str(), c[0].kind), ("big_orders", Kind::View));
+    }
+
+    #[test]
+    fn empty_prefix_lists_relations_after_from() {
+        assert_eq!(
+            values("select * from |"),
+            vec!["big_orders", "customers", "orders"]
+        );
+    }
+
+    #[test]
+    fn no_keywords_for_empty_prefix() {
+        assert!(values("select * from orders |").is_empty());
+        assert!(values("|").is_empty());
+    }
+
+    #[test]
+    fn columns_in_where() {
+        assert_eq!(
+            values("select * from orders where t|")
+                .into_iter()
+                .filter(|v| v == "total")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn only_in_scope_columns() {
+        let v = values("select e| from orders");
+        assert!(!v.contains(&"email".to_string()), "{v:?}");
+        let v = values("select e| from customers");
+        assert!(v.contains(&"email".to_string()), "{v:?}");
+    }
+
+    #[test]
+    fn table_after_cursor_is_in_scope() {
+        let mut v = values("select | from orders");
+        v.retain(|c| c != "id");
+        assert_eq!(v, vec!["order_total", "subtotal", "total"]);
+    }
+
+    #[test]
+    fn unknown_tables_fall_back_to_all_columns() {
+        let v = values("select ordtot| from t");
+        assert_eq!(v, vec!["order_total"]);
+    }
+
+    #[test]
+    fn alias_dot_offers_that_relations_columns() {
+        let v = values("select o.| from orders o");
+        assert_eq!(v, vec!["id", "order_total", "subtotal", "total"]);
+        let v = values("select c.| from orders o join customers as c on 1");
+        assert_eq!(v, vec!["email", "id"]);
+    }
+
+    #[test]
+    fn table_name_dot_and_replacement_span() {
+        let (start, c) = at("select orders.to| from orders");
+        assert_eq!(start, 14);
+        assert_eq!(c[0].value, "total");
+    }
+
+    #[test]
+    fn unknown_qualifier_offers_nothing() {
+        assert!(values("select x.|").is_empty());
+        assert!(values("select x.tot|").is_empty());
+    }
+
+    #[test]
+    fn fuzzy_subsequence_and_prefix_first() {
+        assert_eq!(values("select ordtot| from orders"), vec!["order_total"]);
+        let v = values("select tot| from orders");
+        let pos = |n: &str| v.iter().position(|x| x == n).unwrap();
+        assert!(pos("total") < pos("subtotal"), "{v:?}");
+        assert!(pos("total") < pos("order_total"), "{v:?}");
+    }
+
+    #[test]
+    fn fuzzy_records_matched_positions() {
+        let c = at("select ordtot| from orders").1;
+        assert_eq!(c[0].matched, vec![0, 1, 2, 6, 7, 8]);
+    }
+
+    #[test]
+    fn completing_a_word_to_itself_is_skipped() {
+        assert!(!values("select * from orders|").contains(&"orders".to_string()));
     }
 
     #[test]
     fn completes_special_commands() {
-        let (start, c) = candidates(&cache(), ".tab", 4);
+        let (start, c) = at(".tab|");
         assert_eq!(start, 0);
-        assert_eq!(c, vec![".tables"]);
-        let (_, c) = candidates(&cache(), "\\d", 2);
-        assert!(c.contains(&"\\dt".to_string()) && c.contains(&"\\di".to_string()));
+        assert_eq!(
+            c.iter().map(|c| c.value.as_str()).collect::<Vec<_>>(),
+            vec![".tables"]
+        );
+        assert!(c.iter().all(|c| c.kind == Kind::Command));
+        let v = values("\\d|");
+        assert!(v.contains(&"\\dt".to_string()) && v.contains(&"\\di".to_string()));
     }
 
     #[test]
-    fn nothing_for_empty_prefix() {
-        assert!(candidates(&cache(), "select ", 7).1.is_empty());
+    fn column_detail_has_kind_type_and_relation() {
+        let c = at("select o.to| from orders o").1;
+        assert_eq!(c[0].kind, Kind::Column);
+        assert_eq!(c[0].detail, "column REAL (orders)");
+        let c = at("select * from cus|").1;
+        assert_eq!(c[0].detail, "table");
+        assert_eq!(at("sel|").1[0].detail, "keyword");
     }
 
     #[test]
-    fn dot_inside_identifier_is_not_a_command() {
-        let (start, c) = candidates(&cache(), "select o.tot", 12);
-        assert_eq!(start, 9);
-        assert_eq!(c, vec!["total"]);
+    fn nothing_inside_string_or_comment() {
+        assert!(values("select 'ord|").is_empty());
+        assert!(values("select 1 -- ord|").is_empty());
     }
 
     #[test]
-    fn suggestion_span_covers_prefix() {
+    fn suggestion_carries_span_and_description() {
         let schema = Arc::new(RwLock::new(cache()));
         let mut comp = SqlCompleter::new(schema);
         let r = comp.complete("select * from ord", 17);
         let s = r.suggestions();
         assert_eq!(s[0].value, "orders");
         assert_eq!((s[0].span.start, s[0].span.end), (14, 17));
+        assert_eq!(s[0].description.as_deref(), Some("table"));
     }
 }

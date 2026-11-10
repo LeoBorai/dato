@@ -5,15 +5,37 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use super::interrupt;
-use crate::client::{Client, ResultSet, StatementResult};
+use crate::client::{Client, ColumnInfo, ResultSet, StatementResult};
 use crate::render::{Format, render_to_string};
 use crate::{special, sql};
 
-/// What the editor completes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationKind {
+    Table,
+    View,
+}
+
+/// A table or view with its columns.
+#[derive(Debug, Clone)]
+pub struct Relation {
+    pub name: String,
+    pub kind: RelationKind,
+    pub columns: Vec<ColumnInfo>,
+}
+
+/// What the editor completes from: relations sorted by name.
 #[derive(Debug, Default, Clone)]
 pub struct SchemaCache {
-    pub tables: Vec<String>,
-    pub columns: Vec<String>,
+    pub relations: Vec<Relation>,
+}
+
+impl SchemaCache {
+    /// Finds a relation by name, ignoring case.
+    pub fn find(&self, name: &str) -> Option<&Relation> {
+        self.relations
+            .iter()
+            .find(|r| r.name.eq_ignore_ascii_case(name))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,16 +112,26 @@ impl Session {
     }
 
     pub fn refresh_schema(&mut self) {
-        let tables = self.client.tables(None).unwrap_or_default();
-        let mut columns: Vec<String> = Vec::new();
-        for t in &tables {
-            if let Ok(cols) = self.client.columns(t) {
-                columns.extend(cols.into_iter().map(|c| c.name));
-            }
-        }
-        columns.sort();
-        columns.dedup();
-        *self.schema.write().unwrap() = SchemaCache { tables, columns };
+        // `tables()` lists views too; `views()` tells which are views.
+        let names = self.client.tables(None).unwrap_or_default();
+        let views = self.client.views(None).unwrap_or_default();
+        let relations = names
+            .into_iter()
+            .map(|name| {
+                let kind = if views.contains(&name) {
+                    RelationKind::View
+                } else {
+                    RelationKind::Table
+                };
+                let columns = self.client.columns(&name).unwrap_or_default();
+                Relation {
+                    name,
+                    kind,
+                    columns,
+                }
+            })
+            .collect();
+        *self.schema.write().unwrap() = SchemaCache { relations };
     }
 
     /// Runs one complete input and returns what to print, in order.
@@ -214,11 +246,38 @@ mod tests {
     fn schema_cache_refreshes_after_ddl() {
         let mut s = session(false);
         let cache = s.schema();
-        assert!(cache.read().unwrap().tables.is_empty());
-        s.handle("create table orders(id, total);");
+        assert!(cache.read().unwrap().relations.is_empty());
+        s.handle("create table orders(id integer, total real);");
+        s.handle("create view big as select * from orders;");
         let c = cache.read().unwrap();
-        assert_eq!(c.tables, vec!["orders"]);
-        assert_eq!(c.columns, vec!["id", "total"]);
+        let names: Vec<_> = c.relations.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["big", "orders"]);
+        let orders = c.find("ORDERS").unwrap();
+        assert_eq!(orders.kind, RelationKind::Table);
+        assert_eq!(c.find("big").unwrap().kind, RelationKind::View);
+        let cols: Vec<_> = orders
+            .columns
+            .iter()
+            .map(|c| (c.name.as_str(), c.type_name.as_str()))
+            .collect();
+        assert_eq!(cols, vec![("id", "INTEGER"), ("total", "REAL")]);
+    }
+
+    #[test]
+    fn schema_cache_sees_added_column() {
+        let mut s = session(false);
+        let cache = s.schema();
+        s.handle("create table orders(id);");
+        s.handle("alter table orders add column note text;");
+        let c = cache.read().unwrap();
+        let names: Vec<_> = c
+            .find("orders")
+            .unwrap()
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["id", "note"]);
     }
 
     #[test]

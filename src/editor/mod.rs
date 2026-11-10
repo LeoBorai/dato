@@ -1,23 +1,27 @@
 //! Query editor: reedline wired with SQL validation, completion and highlighting.
 
 mod completer;
+mod context;
 pub mod external;
 mod highlighter;
 pub mod keywords;
+mod menu;
 mod validator;
 
 use std::sync::{Arc, RwLock};
 
 use reedline::{
-    ColumnarMenu, Emacs, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu,
-    default_emacs_keybindings,
+    EditCommand, Emacs, IdeMenu, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent,
+    ReedlineMenu, default_emacs_keybindings,
 };
 
 use crate::tui::session::SchemaCache;
 
-pub use completer::{SqlCompleter, candidates};
+pub use completer::{Candidate, Kind, SqlCompleter, candidates};
 pub use highlighter::{SqlHighlighter, spans};
 pub use validator::SqlValidator;
+
+use menu::QuietMenu;
 
 const MENU: &str = "completion_menu";
 
@@ -35,11 +39,45 @@ pub fn build(schema: Arc<RwLock<SchemaCache>>) -> Reedline {
     );
     keys.add_binding(KeyModifiers::ALT, KeyCode::Enter, ReedlineEvent::Submit);
 
+    // Open the menu as the user types instead of waiting for Tab. The menu
+    // refreshes itself while open; a space or punctuation closes it, and `.`
+    // reopens it for `alias.` completion.
+    for c in ('a'..='z')
+        .chain('A'..='Z')
+        .chain('0'..='9')
+        .chain(['_', '$', '.', '\\'])
+    {
+        let modifiers = if c.is_ascii_uppercase() {
+            KeyModifiers::SHIFT
+        } else {
+            KeyModifiers::NONE
+        };
+        keys.add_binding(
+            modifiers,
+            KeyCode::Char(c),
+            ReedlineEvent::Multiple(vec![
+                ReedlineEvent::Edit(vec![EditCommand::InsertChar(c)]),
+                ReedlineEvent::Menu(MENU.to_string()),
+            ]),
+        );
+    }
+    keys.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Backspace,
+        ReedlineEvent::Multiple(vec![
+            ReedlineEvent::Edit(vec![EditCommand::Backspace]),
+            ReedlineEvent::Menu(MENU.to_string()),
+        ]),
+    );
+
     let mut editor = Reedline::create()
         .with_completer(Box::new(SqlCompleter::new(schema)))
-        .with_menu(ReedlineMenu::EngineCompleter(Box::new(
-            ColumnarMenu::default().with_name(MENU),
-        )))
+        .with_menu(ReedlineMenu::EngineCompleter(Box::new(QuietMenu::new(
+            IdeMenu::default()
+                .with_name(MENU)
+                .with_default_border()
+                .with_word_chars("_$"),
+        ))))
         .with_highlighter(Box::new(SqlHighlighter))
         .with_validator(Box::new(SqlValidator))
         .with_edit_mode(Box::new(Emacs::new(keys)));
