@@ -39,6 +39,9 @@ type Rank = (bool, usize, usize);
 
 /// Matches `prefix` (already lower-cased) as a case-insensitive subsequence of `name`.
 fn fuzzy(prefix: &[char], name: &str) -> Option<(Rank, Vec<usize>)> {
+    if prefix.is_empty() {
+        return Some(((false, 0, 0), Vec::new()));
+    }
     let mut matched = Vec::with_capacity(prefix.len());
     let mut wanted = prefix.iter().peekable();
     for (i, c) in name.chars().enumerate() {

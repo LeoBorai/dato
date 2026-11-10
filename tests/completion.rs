@@ -64,5 +64,5 @@ fn views_and_column_details() {
     let c = complete(&s, "select * from bi|");
     assert_eq!(c[0].detail, "view");
     let c = complete(&s, "select o.tot| from orders o");
-    assert_eq!(c[0].detail, "column real (orders)");
+    assert_eq!(c[0].detail, "column REAL (orders)");
 }

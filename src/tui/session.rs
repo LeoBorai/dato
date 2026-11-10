@@ -260,7 +260,7 @@ mod tests {
             .iter()
             .map(|c| (c.name.as_str(), c.type_name.as_str()))
             .collect();
-        assert_eq!(cols, vec![("id", "integer"), ("total", "real")]);
+        assert_eq!(cols, vec![("id", "INTEGER"), ("total", "REAL")]);
     }
 
     #[test]
