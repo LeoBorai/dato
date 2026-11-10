@@ -1,8 +1,6 @@
 # dato
 
-A database CLI with completion, syntax highlighting and several table formats, inspired by
-[litecli](https://github.com/dbcli/litecli), pgcli and mycli. SQLite is supported today;
-Postgres and MySQL are planned.
+Database CLI for your Terminal
 
 ## Install
 
