@@ -1,6 +1,7 @@
 //! Query editor: reedline wired with SQL validation, completion and highlighting.
 
 mod completer;
+mod context;
 pub mod external;
 mod highlighter;
 pub mod keywords;
@@ -9,13 +10,13 @@ mod validator;
 use std::sync::{Arc, RwLock};
 
 use reedline::{
-    ColumnarMenu, Emacs, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu,
+    Emacs, IdeMenu, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu,
     default_emacs_keybindings,
 };
 
 use crate::tui::session::SchemaCache;
 
-pub use completer::{SqlCompleter, candidates};
+pub use completer::{Candidate, Kind, SqlCompleter, candidates};
 pub use highlighter::{SqlHighlighter, spans};
 pub use validator::SqlValidator;
 
@@ -38,7 +39,7 @@ pub fn build(schema: Arc<RwLock<SchemaCache>>) -> Reedline {
     let mut editor = Reedline::create()
         .with_completer(Box::new(SqlCompleter::new(schema)))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(
-            ColumnarMenu::default().with_name(MENU),
+            IdeMenu::default().with_name(MENU).with_default_border(),
         )))
         .with_highlighter(Box::new(SqlHighlighter))
         .with_validator(Box::new(SqlValidator))
