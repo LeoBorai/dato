@@ -219,7 +219,7 @@ pub fn split_vertical(input: &str) -> (&str, bool) {
 /// Whether Enter should submit `input` (vs. insert a newline).
 pub fn is_complete(input: &str) -> bool {
     let t = input.trim();
-    if t.is_empty() {
+    if t.is_empty() || crate::special::is_special(t) {
         return true;
     }
     if t.ends_with("\\G") || t.ends_with("\\e") {
@@ -319,6 +319,8 @@ mod tests {
         assert!(!is_complete("select 'a;b'"));
         assert!(!is_complete("select 1; select 2"));
         assert!(!is_complete("select 'open"));
+        assert!(is_complete(".tables"));
+        assert!(is_complete("\\d users"));
         assert!(is_complete("select 1\\G"));
         assert!(is_complete("select 1 \\e"));
         assert!(!is_complete(
