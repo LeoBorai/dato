@@ -4,6 +4,7 @@
 //! `special`, `tui`) and per-server clients under `client`.
 
 pub mod client;
+pub mod editor;
 pub mod render;
 pub mod special;
 pub mod sql;
