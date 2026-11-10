@@ -4,6 +4,16 @@ Database CLI for your Terminal
 
 ## Install
 
+Prebuilt binary (Linux, macOS):
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/LeoBorai/dato/main/install.sh | sh
+```
+
+Set `DATO_VERSION` (e.g. `v0.1.0`) or `DATO_INSTALL_DIR` (default `~/.local/bin`) to override. Windows: download the `.zip` from the releases page.
+
+From source:
+
 ```sh
 cargo install dato
 ```
