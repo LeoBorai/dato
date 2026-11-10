@@ -16,9 +16,9 @@ dkc:
 
 
 fmt:
-    cargo clippy --fix --workspace --allow-dirty --allow-staged
+    cargo clippy --fix --allow-dirty --allow-staged
     cargo fmt
 
 # Unit and integration tests
 test:
-    cargo nextest run --workspace --no-tests=pass
+    cargo nextest run --no-tests=pass
