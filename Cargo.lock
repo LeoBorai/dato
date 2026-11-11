@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "dato"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "assert_cmd",
  "clap",
