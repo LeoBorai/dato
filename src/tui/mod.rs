@@ -16,7 +16,8 @@ use crate::client::ConnectOptions;
 use crate::connect::ask_password;
 use crate::editor::{self, external};
 use crate::paths;
-use crate::server::Server;
+use crate::ui::organisms::{ConnectWizard, Pager, too_wide};
+use crate::ui::term;
 use session::{Output, Session};
 
 struct SqlPrompt {
@@ -88,21 +89,45 @@ pub fn emit(outputs: &[Output], out: &mut dyn Write, err: &mut dyn Write) -> boo
     quit
 }
 
-/// Handles `\\connect <server> <args>`: asks for the password when the options
-/// need one, then replaces the session's connection. A failed connect keeps the
-/// current connection.
+/// Shows `text` in the pager when it is wider than the terminal, so rows stay
+/// aligned and Left/Right scroll through the columns. Returns `false` (and shows
+/// nothing) when the text fits or stdout is not a terminal; the caller prints it.
+fn page(text: &str) -> bool {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return false;
+    }
+    let Ok((columns, rows)) = crossterm::terminal::size() else {
+        return false;
+    };
+    if !too_wide(text, columns as usize) {
+        return false;
+    }
+    // No pager (e.g. raw mode unavailable): fall back to plain output.
+    term::run(&mut Pager::new(text, columns as usize, rows as usize)).is_ok()
+}
+
+/// Handles `\\connect`: runs the wizard when `opts` is `None`, asks for the
+/// password when the options need one, then replaces the session's connection.
+/// A cancelled wizard or a failed connect keeps the current connection.
 fn connect(
     session: &mut Session,
     opts: Option<ConnectOptions>,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) {
+    let opts = match opts {
+        Some(o) => Some(o),
+        None => match term::run(&mut ConnectWizard::new()) {
+            Ok(o) => o,
+            Err(e) => {
+                let _ = writeln!(err, "Error: cannot run the connect wizard: {e}");
+                return;
+            }
+        },
+    };
     let Some(mut opts) = opts else {
-        let _ = writeln!(
-            err,
-            "Error: usage: \\connect <server> [args] (servers: {})",
-            Server::names()
-        );
+        let _ = writeln!(out, "Connect cancelled.");
         return;
     };
     if let Err(e) = ask_password(&mut opts) {
@@ -168,6 +193,7 @@ pub fn run(mut session: Session) -> i32 {
                             connect(&mut session, Some(opts), &mut stdout, &mut stderr);
                             false
                         }
+                        Output::Text(text) if page(&text) => false,
                         other => emit(&[other], &mut stdout, &mut stderr),
                     };
                     if quit {
