@@ -14,3 +14,4 @@ pub mod server;
 pub mod special;
 pub mod sql;
 pub mod tui;
+pub mod ui;
