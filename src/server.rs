@@ -11,17 +11,19 @@ use std::fmt;
 pub enum Server {
     Sqlite,
     MySql,
+    PostgreSql,
 }
 
 impl Server {
     /// Every supported server, in the order they are offered to the user.
-    pub const ALL: &'static [Server] = &[Server::Sqlite, Server::MySql];
+    pub const ALL: &'static [Server] = &[Server::Sqlite, Server::MySql, Server::PostgreSql];
 
     /// Name used by CLI subcommands, `\connect` and the connect wizard.
     pub fn name(self) -> &'static str {
         match self {
             Server::Sqlite => "sqlite",
             Server::MySql => "mysql",
+            Server::PostgreSql => "psql",
         }
     }
 
@@ -60,7 +62,9 @@ mod tests {
         }
         assert_eq!(Server::parse("mysql"), Some(Server::MySql));
         assert_eq!(Server::parse("SQLite"), Some(Server::Sqlite));
+        assert_eq!(Server::parse("psql"), Some(Server::PostgreSql));
+        assert_eq!(Server::parse("PSQL"), Some(Server::PostgreSql));
         assert_eq!(Server::parse("postgres"), None);
-        assert_eq!(Server::names(), "sqlite, mysql");
+        assert_eq!(Server::names(), "sqlite, mysql, psql");
     }
 }

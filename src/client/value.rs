@@ -47,6 +47,8 @@ pub enum RelationKind {
 /// A table or view with its columns.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Relation {
+    /// Schema the relation lives in, for servers that qualify names by schema.
+    pub schema: Option<String>,
     pub name: String,
     pub kind: RelationKind,
     pub columns: Vec<ColumnInfo>,

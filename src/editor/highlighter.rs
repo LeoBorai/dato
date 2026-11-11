@@ -103,6 +103,20 @@ mod tests {
     }
 
     #[test]
+    fn dollar_quoted_body_is_a_string_on_postgres() {
+        let string = spans("'s'")[0].0;
+        let comment = spans("-- c")[0].0;
+        let s = spans_with("do $$ x; y $$", Server::PostgreSql);
+        assert!(s.iter().any(|(st, t)| t == "$$ x; y $$" && *st == string));
+        let c = spans_with("select 1 /* a /* b */ c */", Server::PostgreSql);
+        assert_eq!(c.last().unwrap().0, comment);
+        assert_eq!(c.last().unwrap().1, "/* a /* b */ c */");
+        let ident = spans("\"i\"")[0].0;
+        let q = spans_with("select \"x\"", Server::PostgreSql);
+        assert_eq!(q.last().unwrap().0, ident);
+    }
+
+    #[test]
     fn numbers_and_comments_are_styled() {
         let s = spans("1 -- c");
         assert_ne!(s[0].0, Style::new());

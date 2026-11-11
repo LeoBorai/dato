@@ -1,7 +1,8 @@
 //! The connect-form layer of [`Server`]: which fields the wizard asks for and
 //! how their values become [`ConnectOptions`].
 
-use crate::client::{ConnectOptions, MySqlOptions, default_user};
+use crate::client::psql::SslMode;
+use crate::client::{ConnectOptions, MySqlOptions, PsqlOptions, default_user};
 use crate::server::Server;
 
 /// One field of a server's connect form.
@@ -15,6 +16,9 @@ pub struct Field {
     pub placeholder: &'static str,
     /// Masked input.
     pub secret: bool,
+    /// When not empty, the field is one of these values, picked with the arrow
+    /// keys instead of typed; `default` is the one picked first.
+    pub choices: &'static [&'static str],
 }
 
 impl Field {
@@ -25,6 +29,19 @@ impl Field {
             default: default.into(),
             placeholder: "",
             secret: false,
+            choices: &[],
+        }
+    }
+
+    fn choice(
+        key: &'static str,
+        label: &'static str,
+        choices: &'static [&'static str],
+        default: &'static str,
+    ) -> Self {
+        Self {
+            choices,
+            ..Self::text(key, label, default)
         }
     }
 }
@@ -76,6 +93,18 @@ impl ConnectForm for Server {
                 },
                 Field::text("database", "Database", ""),
             ],
+            Server::PostgreSql => vec![
+                Field::text("host", "Host", "localhost"),
+                Field::text("port", "Port", "5432"),
+                Field::text("user", "User", default_user()),
+                Field {
+                    secret: true,
+                    ..Field::text("password", "Password", "")
+                },
+                Field::text("database", "Database", ""),
+                // No TLS unless asked for; the CLI keeps libpq's `prefer`.
+                Field::choice("sslmode", "TLS mode", SslMode::NAMES, "disable"),
+            ],
         }
     }
 
@@ -98,6 +127,32 @@ impl ConnectForm for Server {
                     password_required: false,
                     socket: None,
                     database: v.optional("database"),
+                }))
+            }
+            Server::PostgreSql => {
+                let port = v.get("port").trim();
+                let port = port.parse::<u16>().map_err(|_| FieldError {
+                    key: "port",
+                    message: format!("not a port number: {port}"),
+                })?;
+                let sslmode = match v.optional("sslmode") {
+                    Some(m) => m.parse::<SslMode>().map_err(|message| FieldError {
+                        key: "sslmode",
+                        message,
+                    })?,
+                    None => SslMode::Disable,
+                };
+                let defaults = PsqlOptions::default();
+                Ok(ConnectOptions::Psql(PsqlOptions {
+                    host: v.optional("host").unwrap_or(defaults.host),
+                    port,
+                    user: v.optional("user").unwrap_or(defaults.user),
+                    // Entered in the form, so never asked for again.
+                    password: Some(v.get("password").to_string()).filter(|p| !p.is_empty()),
+                    password_required: false,
+                    dbname: v.optional("database"),
+                    sslmode,
+                    sslrootcert: None,
                 }))
             }
         }
@@ -165,5 +220,61 @@ mod tests {
             Server::Sqlite.build(&values(&[("file", "")])).unwrap(),
             ConnectOptions::sqlite(None)
         );
+    }
+
+    #[test]
+    fn psql_fields_and_defaults() {
+        let f = Server::PostgreSql.fields();
+        let keys: Vec<_> = f.iter().map(|f| f.key).collect();
+        assert_eq!(
+            keys,
+            ["host", "port", "user", "password", "database", "sslmode"]
+        );
+        assert_eq!(f[0].default, "localhost");
+        assert_eq!(f[1].default, "5432");
+        assert_eq!(f[5].default, "disable");
+        assert_eq!(f[5].choices, SslMode::NAMES);
+        assert!(f[3].secret && !f[5].secret && f[0].choices.is_empty());
+    }
+
+    #[test]
+    fn psql_build() {
+        let o = Server::PostgreSql
+            .build(&values(&[
+                ("host", "db.local"),
+                ("port", "5433"),
+                ("user", "app"),
+                ("password", "secret"),
+                ("database", "shop"),
+                ("sslmode", "require"),
+            ]))
+            .unwrap();
+        assert_eq!(
+            o,
+            ConnectOptions::Psql(PsqlOptions {
+                host: "db.local".into(),
+                port: 5433,
+                user: "app".into(),
+                password: Some("secret".into()),
+                password_required: false,
+                dbname: Some("shop".into()),
+                sslmode: SslMode::Require,
+                sslrootcert: None,
+            })
+        );
+        // No TLS unless picked.
+        let o = Server::PostgreSql
+            .build(&values(&[("port", "5432")]))
+            .unwrap();
+        assert!(matches!(o, ConnectOptions::Psql(p) if p.sslmode == SslMode::Disable));
+        let err = Server::PostgreSql
+            .build(&values(&[("port", "nope")]))
+            .unwrap_err();
+        assert_eq!(err.key, "port");
+        let err = Server::PostgreSql
+            .build(&values(&[("port", "5432"), ("sslmode", "bogus")]))
+            .unwrap_err();
+        assert_eq!(err.key, "sslmode");
+        assert!(err.message.contains("verify-full"), "{}", err.message);
     }
 }

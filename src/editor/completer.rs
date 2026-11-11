@@ -7,8 +7,8 @@ use std::sync::{Arc, RwLock};
 
 use reedline::{Completer, CompletionResult, Span, Suggestion};
 
-use super::context::{Context, Expect, analyze_with};
-use crate::dialect::Dialect;
+use super::context::{Context, Expect, Reference, analyze_with};
+use crate::dialect::{Dialect, Qualifier};
 #[cfg(test)]
 use crate::server::Server;
 use crate::special::symbolic_names;
@@ -100,22 +100,36 @@ fn rank<'a>(
     hits.into_iter().map(|(_, c)| c).collect()
 }
 
+/// The relation a reference names: in its schema when it gives one, else on the
+/// current search path.
+fn resolve<'a>(cache: &'a SchemaCache, r: &Reference) -> Option<&'a Relation> {
+    r.schema
+        .as_deref()
+        .and_then(|s| cache.find_in(s, &r.name))
+        .or_else(|| cache.find(&r.name))
+}
+
 /// Relations whose columns are in scope at the cursor.
 fn scope<'a>(cache: &'a SchemaCache, ctx: &Context) -> Vec<&'a Relation> {
     if let Some(q) = &ctx.qualifier {
-        let target = ctx
-            .references
-            .iter()
-            .find(|r| {
-                r.alias
-                    .as_deref()
-                    .is_some_and(|a| a.eq_ignore_ascii_case(q))
-            })
-            .map_or(q.as_str(), |r| r.name.as_str());
-        return cache.find(target).into_iter().collect();
+        // `schema.table.`
+        if let Some(schema) = &ctx.outer_qualifier {
+            return cache.find_in(schema, q).into_iter().collect();
+        }
+        let by_alias = ctx.references.iter().find(|r| {
+            r.alias
+                .as_deref()
+                .is_some_and(|a| a.eq_ignore_ascii_case(q))
+        });
+        return match by_alias {
+            Some(r) => resolve(cache, r),
+            None => cache.find(q),
+        }
+        .into_iter()
+        .collect();
     }
     let mut found: Vec<&Relation> = Vec::new();
-    for r in ctx.references.iter().filter_map(|r| cache.find(&r.name)) {
+    for r in ctx.references.iter().filter_map(|r| resolve(cache, r)) {
         if !found.iter().any(|f| std::ptr::eq(*f, r)) {
             found.push(r);
         }
@@ -150,15 +164,16 @@ pub fn candidates(cache: &SchemaCache, line: &str, pos: usize) -> (usize, Vec<Ca
                     (r.name.as_str(), kind, label.to_string())
                 }),
             )),
-            // `db.` on servers with databases: that database's tables, unless `db`
-            // is also a relation or alias in scope.
+            // `db.` or `schema.`: that database's or schema's tables, unless the
+            // name is also a relation or alias in scope.
             Expect::Columns
-                if server.qualifies_databases()
+                if server.qualifier() != Qualifier::None
+                    && ctx.outer_qualifier.is_none()
                     && scope(cache, &ctx).is_empty()
                     && ctx
                         .qualifier
                         .as_deref()
-                        .is_some_and(|q| cache.has_database(q)) =>
+                        .is_some_and(|q| cache.has_qualifier(q)) =>
             {
                 let q = ctx.qualifier.as_deref().unwrap_or_default();
                 out.extend(rank(
@@ -255,6 +270,7 @@ mod tests {
 
     fn rel(name: &str, kind: RelationKind, cols: &[(&str, &str)]) -> Relation {
         Relation {
+            schema: None,
             name: name.into(),
             kind,
             columns: cols
@@ -305,7 +321,18 @@ mod tests {
                 ("crm".into(), "deals".into()),
                 ("shop".into(), "orders".into()),
             ],
+            schema_relations: Vec::new(),
         }
+    }
+
+    /// A cache whose `crm` qualifier has fully known relations, as a
+    /// schema-qualifying server provides.
+    fn schema_cache() -> SchemaCache {
+        let mut contacts = rel("contacts", RelationKind::Table, &[("email", "text")]);
+        contacts.schema = Some("crm".into());
+        let mut c = mysql_cache();
+        c.schema_relations = vec![contacts];
+        c
     }
 
     fn values_in(cache: &SchemaCache, text: &str) -> Vec<String> {
@@ -513,5 +540,69 @@ mod tests {
         assert_eq!(s[0].value, "orders");
         assert_eq!((s[0].span.start, s[0].span.end), (14, 17));
         assert_eq!(s[0].description.as_deref(), Some("table"));
+    }
+
+    #[test]
+    fn schema_table_dot_offers_columns() {
+        let c = schema_cache();
+        assert_eq!(
+            values_in(&c, "select crm.contacts.| from crm.contacts"),
+            ["email"]
+        );
+        assert!(values_in(&c, "select crm.nope.|").is_empty());
+    }
+
+    #[test]
+    fn alias_of_schema_qualified_table() {
+        let c = schema_cache();
+        assert_eq!(values_in(&c, "select k.| from crm.contacts k"), ["email"]);
+    }
+
+    #[test]
+    fn alias_dot_and_database_dot_unchanged() {
+        assert_eq!(
+            values_in(&mysql_cache(), "select o.| from orders o"),
+            ["id"]
+        );
+        assert_eq!(
+            values_in(&mysql_cache(), "select * from crm.|"),
+            ["contacts", "deals"]
+        );
+    }
+
+    #[test]
+    fn has_qualifier_follows_the_server() {
+        assert!(mysql_cache().has_qualifier("CRM"));
+        assert!(!mysql_cache().has_qualifier("nope"));
+        assert!(!cache().has_qualifier("crm"));
+    }
+
+    fn psql_cache() -> SchemaCache {
+        let mut invoices = rel("invoices", RelationKind::Table, &[("total", "numeric")]);
+        invoices.schema = Some("sales".into());
+        SchemaCache {
+            server: Some(Server::PostgreSql),
+            relations: vec![rel("orders", RelationKind::Table, &[("id", "integer")])],
+            qualified: vec![
+                ("public".into(), "orders".into()),
+                ("sales".into(), "invoices".into()),
+            ],
+            schema_relations: vec![invoices],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn schema_dot_and_schema_table_dot_on_postgres() {
+        let c = psql_cache();
+        assert_eq!(values_in(&c, "select * from sales.|"), ["invoices"]);
+        assert_eq!(
+            values_in(&c, "select sales.invoices.| from sales.invoices"),
+            ["total"]
+        );
+        assert_eq!(values_in(&c, "select i.| from sales.invoices i"), ["total"]);
+        assert!(values_in(&c, "select x.|").is_empty());
+        assert!(values_in(&c, "retur|").contains(&"returning".to_string()));
+        assert!(!values_in(&c, "prag|").contains(&"pragma".to_string()));
     }
 }

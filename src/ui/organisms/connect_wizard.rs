@@ -6,7 +6,7 @@ use nu_ansi_term::{Color, Style};
 use crate::client::ConnectOptions;
 use crate::server::Server;
 use crate::ui::atoms::{PasswordInput, SelectList, TextInput};
-use crate::ui::molecules::{FieldInput, LabeledField};
+use crate::ui::molecules::{Choice, FieldInput, LabeledField};
 use crate::ui::{ConnectForm, Field, FieldValues, Line, Step, Widget};
 
 enum Stage {
@@ -30,7 +30,9 @@ impl Default for ConnectWizard {
 }
 
 fn field(spec: &Field) -> LabeledField {
-    let input = if spec.secret {
+    let input = if !spec.choices.is_empty() {
+        FieldInput::Choice(Choice::new(spec.choices, &spec.default))
+    } else if spec.secret {
         FieldInput::Password(PasswordInput::new())
     } else {
         FieldInput::Text(TextInput::new(&spec.default).with_placeholder(spec.placeholder))
@@ -160,7 +162,10 @@ mod tests {
     fn lists_supported_servers() {
         let w = ConnectWizard::new();
         let s = screen(&w);
-        assert!(s.contains("> sqlite") && s.contains("  mysql"), "{s}");
+        assert!(
+            s.contains("> sqlite") && s.contains("  mysql") && s.contains("  psql"),
+            "{s}"
+        );
     }
 
     #[test]
@@ -239,6 +244,65 @@ mod tests {
         assert_eq!(
             feed(&mut ConnectWizard::new(), [enter(), ctrl('c')]),
             Step::Cancel
+        );
+    }
+
+    #[test]
+    fn psql_defaults_masked_password_and_result() {
+        use crate::client::PsqlOptions;
+        use crate::client::psql::SslMode;
+        let mut w = ConnectWizard::new();
+        feed(&mut w, [key(KeyCode::Down), key(KeyCode::Down), enter()]);
+        let s = screen(&w);
+        assert!(s.contains("Host: localhost"), "{s}");
+        feed(&mut w, [enter()]);
+        assert!(screen(&w).contains("Port: 5432"));
+        // port -> user: replace the default user
+        feed(&mut w, [enter(), ctrl('u')]);
+        feed(&mut w, typed("app"));
+        feed(&mut w, [enter()]);
+        feed(&mut w, typed("secret"));
+        let s = screen(&w);
+        assert!(
+            s.contains("Password: ******") && !s.contains("secret"),
+            "{s}"
+        );
+        feed(&mut w, [enter()]);
+        feed(&mut w, typed("shop").into_iter().chain([enter()]));
+        // TLS is off unless picked, and picked rather than typed.
+        assert!(
+            screen(&w).contains("TLS mode: (*) disable  ( ) prefer"),
+            "{}",
+            screen(&w)
+        );
+        let done = feed(&mut w, [enter()]);
+        assert_eq!(
+            done,
+            Step::Done(ConnectOptions::Psql(PsqlOptions {
+                host: "localhost".into(),
+                port: 5432,
+                user: "app".into(),
+                password: Some("secret".into()),
+                password_required: false,
+                dbname: Some("shop".into()),
+                sslmode: SslMode::Disable,
+                sslrootcert: None,
+            }))
+        );
+    }
+
+    #[test]
+    fn psql_tls_mode_is_picked_with_the_arrow_keys() {
+        use crate::client::psql::SslMode;
+        let mut w = ConnectWizard::new();
+        feed(&mut w, [key(KeyCode::Down), key(KeyCode::Down), enter()]);
+        // host, port, user, password, database
+        feed(&mut w, [enter(), enter(), enter(), enter(), enter()]);
+        feed(&mut w, [key(KeyCode::Right), key(KeyCode::Right)]);
+        assert!(screen(&w).contains("( ) disable  ( ) prefer  (*) require"));
+        let done = feed(&mut w, [enter()]);
+        assert!(
+            matches!(done, Step::Done(ConnectOptions::Psql(p)) if p.sslmode == SslMode::Require)
         );
     }
 }

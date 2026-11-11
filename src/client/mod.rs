@@ -6,6 +6,7 @@
 //! submodule that opens it.
 
 pub mod mysql;
+pub mod psql;
 pub mod sqlite;
 pub mod value;
 
@@ -13,6 +14,8 @@ use std::sync::Arc;
 
 use crate::server::Server;
 
+pub use mysql::MySqlOptions;
+pub use psql::PsqlOptions;
 pub use value::{ColumnInfo, Relation, RelationKind, ResultSet, StatementResult, Value};
 
 #[derive(Debug, thiserror::Error)]
@@ -71,9 +74,16 @@ pub trait Client: Send {
         Ok(Vec::new())
     }
 
-    /// `(database, table)` pairs across the server's user databases, for `db.`
-    /// completion. Empty for servers without named databases.
+    /// `(database or schema, table)` pairs across the server's user databases or
+    /// schemas, for `qualifier.` completion. Empty for servers without qualifiers.
     fn qualified_tables(&mut self) -> Result<Vec<(String, String)>, ClientError> {
+        Ok(Vec::new())
+    }
+
+    /// Relations of every user schema, each with `schema` set, for
+    /// `schema.table.` completion. Empty for servers that do not qualify names
+    /// by schema.
+    fn schema_relations(&mut self) -> Result<Vec<Relation>, ClientError> {
         Ok(Vec::new())
     }
 
@@ -91,6 +101,7 @@ pub trait Client: Send {
                 };
                 let columns = self.columns(&name).unwrap_or_default();
                 Relation {
+                    schema: None,
                     name,
                     kind,
                     columns,
@@ -100,34 +111,7 @@ pub trait Client: Send {
     }
 }
 
-/// MySQL login parameters, from `dato mysql`, `\connect mysql` or the wizard.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MySqlOptions {
-    pub host: String,
-    pub port: u16,
-    pub user: String,
-    pub password: Option<String>,
-    /// `-p` was given: ask for the password before connecting.
-    pub password_required: bool,
-    pub socket: Option<String>,
-    pub database: Option<String>,
-}
-
-impl Default for MySqlOptions {
-    fn default() -> Self {
-        Self {
-            host: "localhost".into(),
-            port: 3306,
-            user: default_user(),
-            password: None,
-            password_required: false,
-            socket: None,
-            database: None,
-        }
-    }
-}
-
-/// The current OS user, as the `mysql` client uses by default.
+/// The current OS user, the default login of the `mysql` and `psql` clients.
 pub fn default_user() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
@@ -142,6 +126,7 @@ pub enum ConnectOptions {
         path: Option<String>,
     },
     MySql(MySqlOptions),
+    Psql(PsqlOptions),
 }
 
 impl ConnectOptions {
@@ -149,6 +134,30 @@ impl ConnectOptions {
         match self {
             ConnectOptions::Sqlite { .. } => Server::Sqlite,
             ConnectOptions::MySql(_) => Server::MySql,
+            ConnectOptions::Psql(_) => Server::PostgreSql,
+        }
+    }
+
+    /// The prompt to ask for a password with, when these options ask for one
+    /// that is not set yet.
+    pub fn needs_password(&self) -> Option<&'static str> {
+        match self {
+            ConnectOptions::Sqlite { .. } => None,
+            ConnectOptions::MySql(o) => {
+                (o.password_required && o.password.is_none()).then_some("Enter password: ")
+            }
+            ConnectOptions::Psql(o) => {
+                (o.password_required && o.password.is_none()).then_some("Password: ")
+            }
+        }
+    }
+
+    /// Stores the password asked for after [`Self::needs_password`].
+    pub fn set_password(&mut self, password: String) {
+        match self {
+            ConnectOptions::Sqlite { .. } => {}
+            ConnectOptions::MySql(o) => o.password = Some(password),
+            ConnectOptions::Psql(o) => o.password = Some(password),
         }
     }
 
@@ -174,6 +183,7 @@ impl Connector for Server {
                 Ok(Box::new(sqlite::SqliteClient::open(path.as_deref())?))
             }
             (Server::MySql, ConnectOptions::MySql(o)) => mysql::open(o),
+            (Server::PostgreSql, ConnectOptions::Psql(o)) => psql::open(o),
             (s, o) => Err(ClientError::Open(format!(
                 "{} options cannot open a {s} connection",
                 o.server()
@@ -222,6 +232,18 @@ mod tests {
             .err()
             .unwrap();
         assert!(err.to_string().contains("cannot open a mysql connection"));
+    }
+
+    #[test]
+    fn password_prompt_per_server() {
+        let mut o = ConnectOptions::MySql(MySqlOptions {
+            password_required: true,
+            ..Default::default()
+        });
+        assert_eq!(o.needs_password(), Some("Enter password: "));
+        o.set_password("x".into());
+        assert_eq!(o.needs_password(), None);
+        assert_eq!(ConnectOptions::sqlite(None).needs_password(), None);
     }
 
     #[test]

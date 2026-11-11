@@ -296,11 +296,32 @@ mod tests {
             Output::Connect(ConnectOptions::MySql(o))
                 if o.host == "db.local" && o.password_required
         ));
-        let out = s.handle("\\connect postgres");
-        assert!(
-            matches!(&out[0], Output::Error(e) if e.contains("postgres") && e.contains("sqlite, mysql")),
-            "{out:?}"
-        );
+        assert!(matches!(
+            &s.handle("\\connect psql -h db.local -U app -W shop")[0],
+            Output::Connect(ConnectOptions::Psql(o))
+                if o.host == "db.local" && o.user == "app" && o.password_required
+                    && o.dbname.as_deref() == Some("shop")
+        ));
+        assert!(matches!(
+            &s.handle("\\connect PSQL")[0],
+            Output::Connect(ConnectOptions::Psql(_))
+        ));
+        // Another server's flag is rejected.
+        assert!(matches!(
+            &s.handle("\\connect psql -P 1")[0],
+            Output::Error(_)
+        ));
+        assert!(matches!(
+            &s.handle("\\connect mysql -U app")[0],
+            Output::Error(_)
+        ));
+        for name in ["postgres", "oracle"] {
+            let out = s.handle(&format!("\\connect {name}"));
+            assert!(
+                matches!(&out[0], Output::Error(e) if e.contains(name) && e.contains("sqlite, mysql, psql")),
+                "{out:?}"
+            );
+        }
         assert!(matches!(
             &s.handle("\\connect mysql --bogus")[0],
             Output::Error(_)

@@ -2,4 +2,4 @@
 
 mod labeled_field;
 
-pub use labeled_field::{FieldInput, LabeledField};
+pub use labeled_field::{Choice, FieldInput, LabeledField};

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use super::interrupt;
 use crate::client::{self as db, Client, ClientError, ConnectOptions, ResultSet, StatementResult};
 pub use crate::client::{Relation, RelationKind};
-use crate::dialect::Dialect;
+use crate::dialect::{Dialect, Qualifier};
 use crate::render::{Format, render_to_string};
 use crate::server::Server;
 use crate::{special, sql};
@@ -22,8 +22,12 @@ pub struct SchemaCache {
     pub relations: Vec<Relation>,
     /// Databases on the server (servers with `db.` qualifiers only).
     pub databases: Vec<String>,
-    /// `(database, table)` pairs across user databases, for `db.` completion.
+    /// `(qualifier, table)` pairs across the server's user databases (MySQL) or
+    /// schemas (PostgreSQL), for `qualifier.` completion.
     pub qualified: Vec<(String, String)>,
+    /// Relations of every user schema with their columns, for `schema.table.`
+    /// completion (schema-qualifying servers only).
+    pub schema_relations: Vec<Relation>,
 }
 
 impl SchemaCache {
@@ -35,6 +39,29 @@ impl SchemaCache {
     /// Whether `name` is a database on the server, ignoring case.
     pub fn has_database(&self, name: &str) -> bool {
         self.databases.iter().any(|d| d.eq_ignore_ascii_case(name))
+    }
+
+    /// Whether `name` can qualify a table on this server: a database (MySQL) or
+    /// a schema (PostgreSQL), ignoring case.
+    pub fn has_qualifier(&self, name: &str) -> bool {
+        match self.dialect().qualifier() {
+            Qualifier::None => false,
+            Qualifier::Database => self.has_database(name),
+            Qualifier::Schema => self
+                .qualified
+                .iter()
+                .any(|(s, _)| s.eq_ignore_ascii_case(name)),
+        }
+    }
+
+    /// Finds a relation of `schema` by name, ignoring case.
+    pub fn find_in(&self, schema: &str, name: &str) -> Option<&Relation> {
+        self.schema_relations.iter().find(|r| {
+            r.schema
+                .as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case(schema))
+                && r.name.eq_ignore_ascii_case(name)
+        })
     }
 
     /// Finds a relation by name, ignoring case.
@@ -172,7 +199,7 @@ impl Session {
         let cache = match self.client.as_deref_mut() {
             Some(c) => {
                 let server = c.server();
-                let (databases, qualified) = if server.qualifies_databases() {
+                let (databases, qualified) = if server.qualifier() != Qualifier::None {
                     (
                         c.database_names().unwrap_or_default(),
                         c.qualified_tables().unwrap_or_default(),
@@ -180,11 +207,17 @@ impl Session {
                 } else {
                     Default::default()
                 };
+                let schema_relations = if server.qualifier() == Qualifier::Schema {
+                    c.schema_relations().unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 SchemaCache {
                     server: Some(server),
                     relations: c.relations().unwrap_or_default(),
                     databases,
                     qualified,
+                    schema_relations,
                 }
             }
             None => SchemaCache::default(),

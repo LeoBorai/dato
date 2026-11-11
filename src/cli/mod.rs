@@ -3,10 +3,12 @@
 use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
+pub mod cmd;
+
 use clap::{Parser, Subcommand};
 
+use self::cmd::{MySql, PostgreSql, ServerCmd, Sqlite, ask_password};
 use crate::client::ConnectOptions;
-use crate::connect::{MySqlArgs, SqliteArgs, ask_password};
 use crate::render::Format;
 use crate::sql::is_complete;
 use crate::tui::{
@@ -23,7 +25,7 @@ use crate::tui::{
 )]
 pub struct Args {
     #[command(subcommand)]
-    pub command: Option<ServerCommand>,
+    pub command: Option<Command>,
 
     /// SQLite database file or `:memory:`; shorthand for `dato sqlite FILE`.
     /// Without a target the interactive shell starts disconnected.
@@ -40,19 +42,21 @@ pub struct Args {
 
 /// One subcommand per server.
 #[derive(Debug, Subcommand)]
-pub enum ServerCommand {
-    Sqlite(SqliteArgs),
-    Mysql(MySqlArgs),
+pub enum Command {
+    Sqlite(Sqlite),
+    Mysql(MySql),
+    Psql(PostgreSql),
 }
 
 /// Where to connect at startup: `Ok(None)` means start disconnected.
 pub fn startup_options(args: &Args) -> Result<Option<ConnectOptions>, String> {
     match (&args.command, args.target.as_deref()) {
-        (Some(ServerCommand::Sqlite(a)), _) => Ok(Some(a.options())),
-        (Some(ServerCommand::Mysql(a)), _) => Ok(Some(a.options())),
+        (Some(Command::Sqlite(a)), _) => Ok(Some(a.options())),
+        (Some(Command::Mysql(a)), _) => Ok(Some(a.options())),
+        (Some(Command::Psql(a)), _) => Ok(Some(a.options())),
         (None, Some(t)) if t.contains("://") => Err(format!(
-            "URL targets are not supported: {t}; use `dato mysql -h HOST -u USER -p DB` \
-             or `dato sqlite FILE`"
+            "URL targets are not supported: {t}; use `dato psql -h HOST -U USER -W DB`, \
+             `dato mysql -h HOST -u USER -p DB` or `dato sqlite FILE`"
         )),
         (None, Some(t)) => Ok(Some(ConnectOptions::sqlite(Some(t)))),
         (None, None) => Ok(None),
@@ -256,7 +260,7 @@ mod tests {
         assert!(Args::try_parse_from(["dato", "mysql", "-u", "root", "-psecret"]).is_err());
         assert!(matches!(
             parse(&["mysql", "-D", "shop", "-e", "select database();"]).command,
-            Some(ServerCommand::Mysql(_))
+            Some(Command::Mysql(_))
         ));
     }
 
@@ -310,5 +314,35 @@ mod tests {
         let (code, out, _) = run_script("create table users(a);\n.tables\n");
         assert_eq!(code, 0);
         assert!(out.contains("users"));
+    }
+
+    #[test]
+    fn psql_subcommand_and_password_prompt() {
+        let args = parse(&[
+            "psql", "-h", "db.local", "-U", "app", "-W", "shop", "-e", "select 1",
+        ]);
+        let Ok(Some(mut o)) = startup_options(&args) else {
+            panic!("psql options")
+        };
+        assert!(
+            matches!(&o, ConnectOptions::Psql(p) if p.host == "db.local" && p.password_required)
+        );
+        assert_eq!(o.needs_password(), Some("Password: "));
+        o.set_password("pw".into());
+        assert_eq!(o.needs_password(), None);
+        let help = Args::try_parse_from(["dato", "psql", "--help"]).unwrap_err();
+        assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+        assert!(help.to_string().contains("--sslmode"), "{help}");
+        assert!(Args::try_parse_from(["dato", "psql", "-U", "x", "-Wsecret"]).is_err());
+        assert!(Args::try_parse_from(["dato", "psql", "-P", "5433"]).is_err());
+    }
+
+    #[test]
+    fn postgres_url_target_points_at_the_subcommands() {
+        let err = startup_options(&parse(&["postgres://app@localhost/shop"])).unwrap_err();
+        assert!(
+            err.contains("dato psql") && err.contains("dato mysql") && err.contains("dato sqlite"),
+            "{err}"
+        );
     }
 }
