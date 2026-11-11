@@ -151,7 +151,7 @@ fn value_mapping_keeps_precision() {
 
     let mut s = Session::new(c, Format::Psql, false);
     let out = text(&s.handle("select cast(1.10 as decimal(5,2)) as d;"));
-    assert!(out.contains("    d \\n------\\n 1.10 "), "{out}");
+    assert!(out.contains("\\n 1.10 \\n"), "{out}");
 }
 
 #[test]
