@@ -114,6 +114,10 @@ fn builder(o: &MySqlOptions) -> OptsBuilder {
         .user(Some(o.user.clone()))
         .pass(o.password.clone())
         .db_name(o.database.clone())
+        // Metadata queries use `DATABASE()`, which a cached prepared statement
+        // keeps resolving to the database it was first prepared under, so they
+        // would go stale after `USE`.
+        .stmt_cache_size(0)
         .tcp_connect_timeout(Some(Duration::from_secs(10)));
     match &o.socket {
         Some(s) => b.socket(Some(s.clone())).prefer_socket(true),
