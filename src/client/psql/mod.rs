@@ -127,11 +127,15 @@ fn like_prefix(prefix: &str) -> String {
 
 fn config(o: &PsqlOptions) -> Config {
     let mut c = Config::new();
+    // `host_path` (unix socket directory) only exists on unix targets.
+    #[cfg(unix)]
     if o.host.starts_with('/') {
         c.host_path(&o.host);
     } else {
         c.host(&o.host);
     }
+    #[cfg(not(unix))]
+    c.host(&o.host);
     c.port(o.port)
         .user(&o.user)
         .dbname(o.dbname.as_deref().unwrap_or(&o.user))
