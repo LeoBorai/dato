@@ -259,6 +259,21 @@ mod tests {
     }
 
     #[test]
+    fn numeric_is_right_aligned_verbatim() {
+        let r = rs(
+            "d",
+            vec![
+                Value::Numeric("1.10".into()),
+                Value::Numeric("100.00".into()),
+            ],
+        );
+        assert_eq!(
+            render_to_string(&r, Format::Psql),
+            " d      \n--------\n   1.10 \n 100.00 \n"
+        );
+    }
+
+    #[test]
     fn psql_multiple_columns() {
         let r = ResultSet {
             columns: vec!["a".into(), "b".into()],

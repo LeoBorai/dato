@@ -10,7 +10,7 @@ fn dato() -> Command {
 #[test]
 fn one_shot_select_prints_table() {
     dato()
-        .args([":memory:", "-f", "ascii", "-e", "select 1 as n;"])
+        .args([":memory:", "-T", "ascii", "-e", "select 1 as n;"])
         .assert()
         .success()
         .stdout("+---+\n| n |\n+---+\n| 1 |\n+---+\n");
@@ -19,7 +19,7 @@ fn one_shot_select_prints_table() {
 #[test]
 fn explicit_csv_format() {
     dato()
-        .args([":memory:", "-f", "csv", "-e", "select 1 as a, 'x' as b;"])
+        .args([":memory:", "-T", "csv", "-e", "select 1 as a, 'x' as b;"])
         .assert()
         .success()
         .stdout("a,b\n1,x\n");
@@ -35,12 +35,89 @@ fn piped_stdout_defaults_to_tsv() {
 }
 
 #[test]
-fn no_target_uses_memory_database() {
+fn long_format_flag() {
+    dato()
+        .args([":memory:", "--format", "csv", "-e", "select 1 as a;"])
+        .assert()
+        .success()
+        .stdout("a\n1\n");
+}
+
+#[test]
+fn short_f_is_not_accepted() {
+    dato()
+        .args([":memory:", "-f", "csv", "-e", "select 1;"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn one_shot_without_target_is_an_error() {
     dato()
         .args(["-e", "select 42 as answer;"])
         .assert()
+        .code(1)
+        .stdout("")
+        .stderr(predicate::str::contains("database target is required"));
+}
+
+#[test]
+fn piped_input_without_target_is_an_error() {
+    dato()
+        .write_stdin("select 1;\n")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("database target is required"));
+}
+
+#[test]
+fn sqlite_subcommand_matches_shorthand() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("app.db");
+    dato()
+        .arg("sqlite")
+        .arg(&db)
+        .args(["-e", "create table t(a); insert into t values (3);"])
+        .assert()
+        .success();
+    dato()
+        .arg(&db)
+        .args(["-e", "select a from t;"])
+        .assert()
         .success()
-        .stdout("answer\n42\n");
+        .stdout("a\n3\n");
+}
+
+#[test]
+fn connect_is_rejected_in_scripts() {
+    dato()
+        .arg(":memory:")
+        .write_stdin("\\connect sqlite a.db\n")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "\\connect is only available in the interactive shell",
+        ));
+}
+
+#[test]
+fn mysql_help_lists_login_arguments() {
+    dato().args(["mysql", "--help"]).assert().success().stdout(
+        predicate::str::contains("-h, --host")
+            .and(predicate::str::contains("-P, --port"))
+            .and(predicate::str::contains("-u, --user"))
+            .and(predicate::str::contains("-p, --password"))
+            .and(predicate::str::contains("-S, --socket"))
+            .and(predicate::str::contains("-D, --database")),
+    );
+}
+
+#[test]
+fn mysql_attached_password_is_rejected() {
+    dato()
+        .args(["mysql", "-u", "root", "-psecret"])
+        .assert()
+        .failure();
 }
 
 #[test]
@@ -92,30 +169,24 @@ fn statements_after_error_do_not_run() {
 #[test]
 fn invalid_format_lists_valid_formats() {
     dato()
-        .args(["-f", "bogus"])
+        .args(["-T", "bogus"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("valid formats"));
 }
 
 #[test]
-fn postgres_url_is_unavailable() {
-    dato()
-        .arg("postgres://localhost/db")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "Postgres backend is not available",
-        ));
-}
-
-#[test]
-fn mysql_url_is_unavailable() {
-    dato()
-        .arg("mysql://localhost/db")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("MySQL backend is not available"));
+fn url_targets_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    for url in ["postgres://localhost/db", "mysql://root@localhost/shop"] {
+        dato()
+            .current_dir(dir.path())
+            .arg(url)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("dato mysql"));
+    }
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }
 
 #[test]

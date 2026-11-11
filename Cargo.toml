@@ -2,11 +2,11 @@
 name = "dato"
 version = "0.0.1"
 edition = "2024"
-description = "Database Client TUI for SQLite"
+description = "Database Client TUI for SQLite and MySQL"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/LeoBorai/dato"
 readme = "README.md"
-keywords = ["sqlite", "cli", "repl", "database", "sql"]
+keywords = ["sqlite", "mysql", "cli", "repl", "database"]
 categories = ["command-line-utilities", "database"]
 include = ["/src", "/tests", "/README.md", "/Cargo.toml", "/Cargo.lock"]
 
@@ -22,10 +22,12 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
 dirs = "7"
+mysql = { version = "28.0.4", default-features = false, features = ["minimal-rust"] }
 nu-ansi-term = "0.50"
 reedline = "~0.53"
+rpassword = "7.5.5"
 rusqlite = { version = "0.41", features = ["bundled"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
 tempfile = "3"
 thiserror = "2"
 unicode-width = "0.2"

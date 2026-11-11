@@ -1,6 +1,7 @@
 //! Editing the current input in an external editor (`\e`, Ctrl-O).
 
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::Command;
 
 /// `$VISUAL`, then `$EDITOR`, then `vi`.
@@ -12,9 +13,25 @@ pub fn editor_command() -> String {
         .unwrap_or_else(|| "vi".to_string())
 }
 
-/// Opens `initial` in `editor` (a program, optionally with arguments) and returns the saved text.
+/// Opens `initial` in `editor` (a program, optionally with arguments) and returns
+/// the saved text. The temporary file lives in `~/.dato` (the system temp dir
+/// without a home directory).
 pub fn edit_with(editor: &str, initial: &str) -> io::Result<String> {
-    let mut file = tempfile::Builder::new().suffix(".sql").tempfile()?;
+    edit_in(
+        crate::paths::ensure_app_dir().ok().as_deref(),
+        editor,
+        initial,
+    )
+}
+
+/// [`edit_with`] with the temporary file in `dir` (`None`: the system temp dir).
+pub fn edit_in(dir: Option<&Path>, editor: &str, initial: &str) -> io::Result<String> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("edit-").suffix(".sql");
+    let mut file = match dir {
+        Some(d) => builder.tempfile_in(d)?,
+        None => builder.tempfile()?,
+    };
     file.write_all(initial.as_bytes())?;
     file.flush()?;
     let mut parts = editor.split_whitespace();
@@ -57,21 +74,27 @@ mod tests {
     fn returns_saved_text() {
         let dir = tempfile::tempdir().unwrap();
         let ed = script(dir.path(), "printf 'select 2;\\n' > \"$1\"");
-        assert_eq!(edit_with(&ed, "select 1").unwrap(), "select 2;");
+        assert_eq!(
+            edit_in(Some(dir.path()), &ed, "select 1").unwrap(),
+            "select 2;"
+        );
     }
 
     #[test]
     fn editor_sees_initial_text() {
         let dir = tempfile::tempdir().unwrap();
         let ed = script(dir.path(), "cat \"$1\" > \"$1.out\"; cp \"$1.out\" \"$1\"");
-        assert_eq!(edit_with(&ed, "select 1").unwrap(), "select 1");
+        assert_eq!(
+            edit_in(Some(dir.path()), &ed, "select 1").unwrap(),
+            "select 1"
+        );
     }
 
     #[test]
     fn failing_editor_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let ed = script(dir.path(), "exit 3");
-        assert!(edit_with(&ed, "x").is_err());
+        assert!(edit_in(Some(dir.path()), &ed, "x").is_err());
     }
 
     #[test]

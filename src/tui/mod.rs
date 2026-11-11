@@ -12,7 +12,11 @@ use reedline::{
     PromptHistorySearchStatus, Signal,
 };
 
+use crate::client::ConnectOptions;
+use crate::connect::ask_password;
 use crate::editor::{self, external};
+use crate::paths;
+use crate::server::Server;
 use session::{Output, Session};
 
 struct SqlPrompt {
@@ -47,8 +51,12 @@ impl Prompt for SqlPrompt {
     }
 }
 
+/// Error for `\\connect` outside the interactive shell.
+pub const NOT_INTERACTIVE: &str = "\\connect is only available in the interactive shell";
+
+/// Shell history: `~/.dato/history`.
 pub fn history_path() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("dato").join("history"))
+    paths::history_file()
 }
 
 /// Prints outputs: text and status to stdout, errors to stderr.
@@ -70,31 +78,75 @@ pub fn emit(outputs: &[Output], out: &mut dyn Write, err: &mut dyn Write) -> boo
                 let _ = writeln!(err, "Error: {e}");
             }
             Output::Quit => quit = true,
+            // Connecting needs a terminal; the shell handles these before emitting.
+            Output::ConnectWizard | Output::Connect(_) => {
+                let _ = writeln!(err, "Error: {NOT_INTERACTIVE}");
+            }
         }
     }
     let _ = out.flush();
     quit
 }
 
+/// Handles `\\connect <server> <args>`: asks for the password when the options
+/// need one, then replaces the session's connection. A failed connect keeps the
+/// current connection.
+fn connect(
+    session: &mut Session,
+    opts: Option<ConnectOptions>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) {
+    let Some(mut opts) = opts else {
+        let _ = writeln!(
+            err,
+            "Error: usage: \\connect <server> [args] (servers: {})",
+            Server::names()
+        );
+        return;
+    };
+    if let Err(e) = ask_password(&mut opts) {
+        let _ = writeln!(err, "Error: cannot read password: {e}");
+        return;
+    }
+    match session.connect(&opts) {
+        Ok(()) => {
+            let _ = writeln!(
+                out,
+                "Connected to {} ({}).",
+                session.prompt_label(),
+                opts.server()
+            );
+        }
+        Err(e) => {
+            let _ = writeln!(err, "Error: {e}");
+        }
+    }
+}
+
 /// Runs the interactive shell until the user quits. Returns the process exit code.
 pub fn run(mut session: Session) -> i32 {
     interrupt::install();
-    let mut line_editor = editor::build(session.schema());
-    if let Some(path) = history_path() {
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+    let mut line_editor = editor::build(session.schema(), session.dialect());
+    match paths::ensure_app_dir() {
+        Ok(_) => {
+            paths::migrate_legacy_history();
+            if let Some(path) = history_path() {
+                match FileBackedHistory::with_file(1000, path) {
+                    Ok(h) => line_editor = line_editor.with_history(Box::new(h)),
+                    Err(e) => eprintln!("warning: history disabled: {e}"),
+                }
+            }
         }
-        match FileBackedHistory::with_file(1000, path) {
-            Ok(h) => line_editor = line_editor.with_history(Box::new(h)),
-            Err(e) => eprintln!("warning: history disabled: {e}"),
-        }
+        Err(e) => eprintln!("warning: history disabled: cannot create ~/.dato: {e}"),
     }
-    let prompt = SqlPrompt {
-        name: session.display_name(),
-    };
     let (mut stdout, mut stderr) = (std::io::stdout(), std::io::stderr());
 
     loop {
+        // Rebuilt each time: `\\connect` and MySQL `USE` change the label.
+        let prompt = SqlPrompt {
+            name: session.prompt_label(),
+        };
         match line_editor.read_line(&prompt) {
             Ok(Signal::Success(buffer)) => {
                 if let Some(rest) = external::strip_edit_suffix(&buffer) {
@@ -106,9 +158,21 @@ pub fn run(mut session: Session) -> i32 {
                     }
                     continue;
                 }
-                let outputs = session.handle(&buffer);
-                if emit(&outputs, &mut stdout, &mut stderr) {
-                    return 0;
+                for output in session.handle(&buffer) {
+                    let quit = match output {
+                        Output::ConnectWizard => {
+                            connect(&mut session, None, &mut stdout, &mut stderr);
+                            false
+                        }
+                        Output::Connect(opts) => {
+                            connect(&mut session, Some(opts), &mut stdout, &mut stderr);
+                            false
+                        }
+                        other => emit(&[other], &mut stdout, &mut stderr),
+                    };
+                    if quit {
+                        return 0;
+                    }
                 }
             }
             Ok(Signal::CtrlC(_)) => {}
@@ -145,9 +209,9 @@ mod tests {
     }
 
     #[test]
-    fn history_lives_under_data_dir() {
+    fn history_lives_in_dot_dato() {
         if let Some(p) = history_path() {
-            assert!(p.ends_with("dato/history"));
+            assert!(p.ends_with(".dato/history"));
         }
     }
 }

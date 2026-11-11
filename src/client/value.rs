@@ -5,13 +5,15 @@ pub enum Value {
     Null,
     Integer(i64),
     Real(f64),
+    /// Exact numeric text (`DECIMAL`, integers beyond `i64`), kept digit for digit.
+    Numeric(String),
     Text(String),
     Blob(Vec<u8>),
 }
 
 impl Value {
     pub fn is_numeric(&self) -> bool {
-        matches!(self, Value::Integer(_) | Value::Real(_))
+        matches!(self, Value::Integer(_) | Value::Real(_) | Value::Numeric(_))
     }
 }
 
@@ -34,6 +36,20 @@ impl ResultSet {
 pub enum StatementResult {
     Rows(ResultSet),
     Affected(u64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationKind {
+    Table,
+    View,
+}
+
+/// A table or view with its columns.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Relation {
+    pub name: String,
+    pub kind: RelationKind,
+    pub columns: Vec<ColumnInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -58,6 +58,16 @@ mod tests {
     }
 
     #[test]
+    fn numeric_is_printed_verbatim() {
+        let r = ResultSet {
+            columns: vec!["d".into()],
+            rows: vec![vec![Value::Numeric("1.10".into())]],
+        };
+        assert_eq!(render_to_string(&r, Format::Csv), "d\n1.10\n");
+        assert_eq!(render_to_string(&r, Format::Tsv), "d\n1.10\n");
+    }
+
+    #[test]
     fn tsv_escapes_tabs_and_newlines() {
         let r = ResultSet {
             columns: vec!["a".into()],

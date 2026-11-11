@@ -7,8 +7,10 @@ use std::sync::{Arc, RwLock};
 
 use reedline::{Completer, CompletionResult, Span, Suggestion};
 
-use super::context::{Context, Expect, analyze};
-use super::keywords::KEYWORDS;
+use super::context::{Context, Expect, analyze_with};
+use crate::dialect::Dialect;
+#[cfg(test)]
+use crate::server::Server;
 use crate::special::symbolic_names;
 use crate::tui::session::{Relation, RelationKind, SchemaCache};
 
@@ -22,6 +24,7 @@ pub enum Kind {
     Column,
     Keyword,
     Command,
+    Database,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,8 +128,10 @@ fn scope<'a>(cache: &'a SchemaCache, ctx: &Context) -> Vec<&'a Relation> {
 }
 
 /// Candidates for the fragment before `pos`, with the fragment's start offset.
+/// Analysis and keywords follow the cache's server.
 pub fn candidates(cache: &SchemaCache, line: &str, pos: usize) -> (usize, Vec<Candidate>) {
-    let ctx = analyze(line, pos);
+    let server = cache.dialect();
+    let ctx = analyze_with(line, pos, server);
     let prefix: Vec<char> = ctx
         .prefix
         .chars()
@@ -145,6 +150,33 @@ pub fn candidates(cache: &SchemaCache, line: &str, pos: usize) -> (usize, Vec<Ca
                     (r.name.as_str(), kind, label.to_string())
                 }),
             )),
+            // `db.` on servers with databases: that database's tables, unless `db`
+            // is also a relation or alias in scope.
+            Expect::Columns
+                if server.qualifies_databases()
+                    && scope(cache, &ctx).is_empty()
+                    && ctx
+                        .qualifier
+                        .as_deref()
+                        .is_some_and(|q| cache.has_database(q)) =>
+            {
+                let q = ctx.qualifier.as_deref().unwrap_or_default();
+                out.extend(rank(
+                    &prefix,
+                    cache
+                        .qualified
+                        .iter()
+                        .filter(|(db, _)| db.eq_ignore_ascii_case(q))
+                        .map(|(db, t)| (t.as_str(), Kind::Table, format!("table ({db})"))),
+                ));
+            }
+            Expect::Databases => out.extend(rank(
+                &prefix,
+                cache
+                    .databases
+                    .iter()
+                    .map(|d| (d.as_str(), Kind::Database, "database".to_string())),
+            )),
             Expect::Columns => out.extend(rank(
                 &prefix,
                 scope(cache, &ctx).into_iter().flat_map(|r| {
@@ -162,7 +194,8 @@ pub fn candidates(cache: &SchemaCache, line: &str, pos: usize) -> (usize, Vec<Ca
                 let lower = ctx.prefix.chars().last().is_some_and(char::is_lowercase);
                 let mut hits = rank(
                     &prefix,
-                    KEYWORDS
+                    server
+                        .keywords()
                         .iter()
                         .filter(|k| k.to_lowercase().starts_with(&ctx.prefix.to_lowercase()))
                         .map(|k| (*k, Kind::Keyword, "keyword".to_string())),
@@ -257,7 +290,70 @@ mod tests {
                 ),
                 rel("big_orders", RelationKind::View, &[("id", "INTEGER")]),
             ],
+            server: Some(Server::Sqlite),
+            ..Default::default()
         }
+    }
+
+    fn mysql_cache() -> SchemaCache {
+        SchemaCache {
+            server: Some(Server::MySql),
+            relations: vec![rel("orders", RelationKind::Table, &[("id", "int")])],
+            databases: vec!["crm".into(), "shop".into()],
+            qualified: vec![
+                ("crm".into(), "contacts".into()),
+                ("crm".into(), "deals".into()),
+                ("shop".into(), "orders".into()),
+            ],
+        }
+    }
+
+    fn values_in(cache: &SchemaCache, text: &str) -> Vec<String> {
+        let pos = text.find('|').expect("cursor marker");
+        let line = text.replacen('|', "", 1);
+        candidates(cache, &line, pos)
+            .1
+            .into_iter()
+            .map(|c| c.value)
+            .collect()
+    }
+
+    #[test]
+    fn keywords_follow_the_server() {
+        assert!(values_in(&mysql_cache(), "sho|").contains(&"show".to_string()));
+        assert!(!values("sho|").contains(&"show".to_string()));
+        assert!(!values_in(&mysql_cache(), "prag|").contains(&"pragma".to_string()));
+        assert!(values("prag|").contains(&"pragma".to_string()));
+    }
+
+    #[test]
+    fn database_dot_offers_its_tables_on_mysql() {
+        let c = mysql_cache();
+        assert_eq!(values_in(&c, "select * from crm.|"), ["contacts", "deals"]);
+        assert_eq!(values_in(&c, "select * from crm.co|"), ["contacts"]);
+        // An alias or table named like a database still means that relation.
+        assert_eq!(values_in(&c, "select crm.| from orders crm"), ["id"]);
+        // Unknown qualifier: nothing.
+        assert!(values_in(&c, "select * from nope.|").is_empty());
+        // SQLite has no `db.` qualifiers.
+        let mut sqlite = c.clone();
+        sqlite.server = Some(Server::Sqlite);
+        assert!(values_in(&sqlite, "select * from crm.|").is_empty());
+    }
+
+    #[test]
+    fn use_offers_databases() {
+        let c = mysql_cache();
+        assert_eq!(values_in(&c, "use c|"), ["crm"]);
+        assert_eq!(values_in(&c, "use |"), ["crm", "shop"]);
+    }
+
+    #[test]
+    fn disconnected_offers_only_keywords_and_commands() {
+        let c = SchemaCache::default();
+        assert!(values_in(&c, "select * from o|").is_empty());
+        assert!(values_in(&c, "sel|").contains(&"select".to_string()));
+        assert!(values_in(&c, "\\con|").contains(&"\\connect".to_string()));
     }
 
     /// Candidate values at the `|` cursor marker.
