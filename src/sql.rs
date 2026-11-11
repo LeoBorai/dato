@@ -1,4 +1,9 @@
 //! Shared SQL lexer: statement splitting, completeness checks and token spans.
+//!
+//! The `*_with` functions take the [`LexRules`] of the session's server; the
+//! plain functions use the SQLite rules.
+
+use crate::dialect::{LexRules, sqlite};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
@@ -31,11 +36,16 @@ fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b >= 0x80
 }
 
-/// Scans a quoted run starting at `i` (the opening quote) with `close` as terminator
-/// and a doubled close as an escape (`''`). Returns (end, terminated).
-fn scan_quoted(b: &[u8], i: usize, close: u8, doubling: bool) -> (usize, bool) {
+/// Scans a quoted run starting at `i` (the opening quote) with `close` as terminator,
+/// a doubled close as an escape (`''`) when `doubling`, and `\x` as an escape when
+/// `backslash`. Returns (end, terminated).
+fn scan_quoted(b: &[u8], i: usize, close: u8, doubling: bool, backslash: bool) -> (usize, bool) {
     let mut j = i + 1;
     while j < b.len() {
+        if backslash && b[j] == b'\\' {
+            j += 2;
+            continue;
+        }
         if b[j] == close {
             if doubling && b.get(j + 1) == Some(&close) {
                 j += 2;
@@ -48,8 +58,13 @@ fn scan_quoted(b: &[u8], i: usize, close: u8, doubling: bool) -> (usize, bool) {
     (b.len(), false)
 }
 
-/// Splits `src` into contiguous tokens covering every byte.
+/// Splits `src` into contiguous tokens covering every byte, using SQLite rules.
 pub fn tokenize(src: &str) -> Vec<Token> {
+    tokenize_with(src, &sqlite::RULES)
+}
+
+/// Splits `src` into contiguous tokens covering every byte.
+pub fn tokenize_with(src: &str, rules: &LexRules) -> Vec<Token> {
     let b = src.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -61,16 +76,21 @@ pub fn tokenize(src: &str) -> Vec<Token> {
                 j += 1;
             }
             (TokenKind::Whitespace, j, true)
-        } else if c == b'\'' {
-            let (e, t) = scan_quoted(b, i, b'\'', true);
+        } else if c == b'\'' || (c == b'"' && rules.double_quote_is_string) {
+            let (e, t) = scan_quoted(b, i, c, true, rules.backslash_escapes);
             (TokenKind::String, e, t)
         } else if c == b'"' || c == b'`' {
-            let (e, t) = scan_quoted(b, i, c, true);
+            let (e, t) = scan_quoted(b, i, c, true, false);
             (TokenKind::QuotedIdent, e, t)
-        } else if c == b'[' {
-            let (e, t) = scan_quoted(b, i, b']', false);
+        } else if c == b'[' && rules.bracket_idents {
+            let (e, t) = scan_quoted(b, i, b']', false, false);
             (TokenKind::QuotedIdent, e, t)
-        } else if c == b'-' && b.get(i + 1) == Some(&b'-') {
+        } else if (c == b'-'
+            && b.get(i + 1) == Some(&b'-')
+            && (!rules.dash_comment_needs_space
+                || b.get(i + 2).is_none_or(|n| n.is_ascii_whitespace())))
+            || (c == b'#' && rules.hash_comments)
+        {
             let mut j = i;
             while j < b.len() && b[j] != b'\n' {
                 j += 1;
@@ -123,7 +143,7 @@ struct Scan {
     unterminated: bool,
 }
 
-fn scan(src: &str) -> Scan {
+fn scan(src: &str, rules: &LexRules) -> Scan {
     let mut statements = Vec::new();
     let mut unterminated = false;
     let mut start = 0;
@@ -134,7 +154,7 @@ fn scan(src: &str) -> Scan {
     let mut case_depth = 0usize;
     let mut end_seen = false;
 
-    for tok in tokenize(src) {
+    for tok in tokenize_with(src, rules) {
         if !tok.terminated {
             unterminated = true;
         }
@@ -166,7 +186,10 @@ fn scan(src: &str) -> Scan {
             let w = tok.text(src).to_ascii_lowercase();
             if first_words.len() < 3 {
                 first_words.push(w.clone());
-                if first_words[0] == "create" && first_words[1..].iter().any(|x| x == "trigger") {
+                if rules.trigger_bodies
+                    && first_words[0] == "create"
+                    && first_words[1..].iter().any(|x| x == "trigger")
+                {
                     in_trigger = true;
                 }
             }
@@ -198,8 +221,14 @@ fn scan(src: &str) -> Scan {
 }
 
 /// Splits input into statements (trimmed, without the `;`), keeping trigger bodies whole.
+/// Uses SQLite rules.
 pub fn split_statements(src: &str) -> Vec<&str> {
-    scan(src)
+    split_statements_with(src, &sqlite::RULES)
+}
+
+/// Splits input into statements (trimmed, without the `;`).
+pub fn split_statements_with<'a>(src: &'a str, rules: &LexRules) -> Vec<&'a str> {
+    scan(src, rules)
         .statements
         .into_iter()
         .map(|(s, e)| src[s..e].trim())
@@ -216,8 +245,13 @@ pub fn split_vertical(input: &str) -> (&str, bool) {
     }
 }
 
-/// Whether Enter should submit `input` (vs. insert a newline).
+/// Whether Enter should submit `input` (vs. insert a newline), using SQLite rules.
 pub fn is_complete(input: &str) -> bool {
+    is_complete_with(input, &sqlite::RULES)
+}
+
+/// Whether Enter should submit `input` (vs. insert a newline).
+pub fn is_complete_with(input: &str, rules: &LexRules) -> bool {
     let t = input.trim();
     if t.is_empty() || crate::special::is_special(t) {
         return true;
@@ -225,7 +259,7 @@ pub fn is_complete(input: &str) -> bool {
     if t.ends_with("\\G") || t.ends_with("\\e") {
         return true;
     }
-    let s = scan(input);
+    let s = scan(input, rules);
     !s.open && !s.unterminated
 }
 
@@ -307,6 +341,63 @@ mod tests {
     fn vertical_suffix() {
         assert_eq!(split_vertical("select 1\\G"), ("select 1", true));
         assert_eq!(split_vertical("select 1;"), ("select 1;", false));
+    }
+
+    const MYSQL: LexRules = crate::dialect::mysql::RULES;
+
+    #[test]
+    fn mysql_strings_and_comments() {
+        use TokenKind::*;
+        let src = "select 'it\\'s; fine', \"a;b\", `c d`, [e] # note; x\n-- y\n--z";
+        let k: Vec<_> = tokenize_with(src, &MYSQL)
+            .into_iter()
+            .filter(|t| t.kind != Whitespace)
+            .map(|t| (t.kind, t.text(src)))
+            .collect();
+        assert_eq!(
+            k,
+            vec![
+                (Word, "select"),
+                (String, "'it\\'s; fine'"),
+                (Punct, ","),
+                (String, "\"a;b\""),
+                (Punct, ","),
+                (QuotedIdent, "`c d`"),
+                (Punct, ","),
+                (Punct, "["),
+                (Word, "e"),
+                (Punct, "]"),
+                (LineComment, "# note; x"),
+                (LineComment, "-- y"),
+                (Punct, "-"),
+                (Punct, "-"),
+                (Word, "z"),
+            ]
+        );
+    }
+
+    #[test]
+    fn mysql_splitting() {
+        assert_eq!(
+            split_statements_with("select 'it\\'s; fine'; select 2", &MYSQL),
+            vec!["select 'it\\'s; fine'", "select 2"]
+        );
+        assert_eq!(
+            split_statements_with("select 1; # note; more", &MYSQL),
+            vec!["select 1"]
+        );
+        assert!(is_complete_with("select 1; # note; more", &MYSQL));
+        assert!(!is_complete_with("select \"a;b\"", &MYSQL));
+        assert!(!is_complete("select \"a;b\""));
+        // No trigger-body handling on MySQL: the inner `;` ends the statement.
+        assert_eq!(
+            split_statements_with(
+                "create trigger t before insert on a for each row begin set @x = 1; end",
+                &MYSQL
+            )
+            .len(),
+            2
+        );
     }
 
     #[test]

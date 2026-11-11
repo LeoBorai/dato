@@ -12,6 +12,9 @@ fn to_json(v: &Value) -> Json {
         Value::Null => Json::Null,
         Value::Integer(i) => Json::from(*i),
         Value::Real(r) => Number::from_f64(*r).map_or(Json::Null, Json::Number),
+        Value::Numeric(n) => n
+            .parse::<Number>()
+            .map_or_else(|_| Json::String(n.clone()), Json::Number),
         Value::Text(t) => Json::String(t.clone()),
         Value::Blob(b) => Json::String(format!("x'{}'", hex(b))),
     }
@@ -52,6 +55,22 @@ mod tests {
         assert_eq!(
             render_to_string(&r, Format::Json),
             "[{\"a\":1,\"b\":null,\"c\":2.5,\"d\":\"x'0102'\"}]\n"
+        );
+    }
+
+    #[test]
+    fn json_numeric_keeps_exact_digits() {
+        let r = ResultSet {
+            columns: vec!["u".into(), "d".into(), "x".into()],
+            rows: vec![vec![
+                Value::Numeric("18446744073709551615".into()),
+                Value::Numeric("1.10".into()),
+                Value::Numeric("not-a-number".into()),
+            ]],
+        };
+        assert_eq!(
+            render_to_string(&r, Format::Json),
+            "[{\"u\":18446744073709551615,\"d\":1.10,\"x\":\"not-a-number\"}]\n"
         );
     }
 

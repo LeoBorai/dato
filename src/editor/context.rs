@@ -3,8 +3,9 @@
 //! A token scan, not a parser: it must cope with the unfinished SQL that is
 //! normal while typing.
 
-use super::keywords::KEYWORDS;
-use crate::sql::{Token, TokenKind, tokenize};
+use crate::dialect::Dialect;
+use crate::server::Server;
+use crate::sql::{Token, TokenKind, tokenize_with};
 
 /// A kind of name the cursor can take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +14,8 @@ pub enum Expect {
     Columns,
     Keywords,
     Commands,
+    /// Database names (after `USE`).
+    Databases,
 }
 
 /// A table or view named in the statement, with its alias when it has one.
@@ -42,6 +45,7 @@ enum Clause {
     Columns,
     Relations,
     Into,
+    Use,
     Other,
 }
 
@@ -84,14 +88,11 @@ fn clause_for(word: &str) -> Option<Clause> {
         | "RETURNING" => Clause::Columns,
         "FROM" | "JOIN" | "UPDATE" | "TABLE" => Clause::Relations,
         "INTO" => Clause::Into,
+        "USE" => Clause::Use,
         "ORDER" | "GROUP" | "LIMIT" | "OFFSET" | "VALUES" | "UNION" | "INTERSECT" | "EXCEPT"
         | "WITH" | "CREATE" | "ALTER" | "DROP" | "INSERT" | "DELETE" => Clause::Other,
         _ => return None,
     })
-}
-
-fn is_keyword(word: &str) -> bool {
-    KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(word))
 }
 
 fn unquote(text: &str) -> String {
@@ -112,16 +113,17 @@ fn unquote(text: &str) -> String {
 }
 
 /// Reads an identifier token: a bare word that is not a keyword, or a quoted one.
-fn ident(line: &str, t: &Token) -> Option<String> {
+fn ident(server: Server, line: &str, t: &Token) -> Option<String> {
     match t.kind {
-        TokenKind::Word if !is_keyword(t.text(line)) => Some(t.text(line).to_string()),
+        TokenKind::Word if !server.is_keyword(t.text(line)) => Some(t.text(line).to_string()),
         TokenKind::QuotedIdent => Some(unquote(t.text(line))),
         _ => None,
     }
 }
 
 /// Relations named after `FROM`, `JOIN`, `UPDATE`, `INTO` and `TABLE`.
-fn references(line: &str, toks: &[&Token]) -> Vec<Reference> {
+fn references(server: Server, line: &str, toks: &[&Token]) -> Vec<Reference> {
+    let ident = |line: &str, t: &Token| ident(server, line, t);
     let mut out = Vec::new();
     let mut i = 0;
     while i < toks.len() {
@@ -169,8 +171,14 @@ fn references(line: &str, toks: &[&Token]) -> Vec<Reference> {
     out
 }
 
-/// Analyzes `line` with the cursor at byte offset `pos`.
+/// Analyzes `line` with the cursor at byte offset `pos`, using SQLite rules.
+#[cfg(test)]
 pub fn analyze(line: &str, pos: usize) -> Context {
+    analyze_with(line, pos, Server::Sqlite)
+}
+
+/// Analyzes `line` with the cursor at byte offset `pos` for `server`'s dialect.
+pub fn analyze_with(line: &str, pos: usize, server: Server) -> Context {
     let mut start = fragment_start(line, pos);
     let mut ctx = Context {
         start,
@@ -196,7 +204,7 @@ pub fn analyze(line: &str, pos: usize) -> Context {
         return ctx;
     }
 
-    let tokens = tokenize(line);
+    let tokens = tokenize_with(line, &server.lex_rules());
     if in_literal(&tokens, pos) {
         return ctx;
     }
@@ -232,7 +240,7 @@ pub fn analyze(line: &str, pos: usize) -> Context {
                 && !(t.start == start && !ctx.prefix.is_empty())
         })
         .collect();
-    ctx.references = references(line, &sig);
+    ctx.references = references(server, line, &sig);
 
     if ctx.qualifier.is_some() {
         ctx.expect = vec![Expect::Columns];
@@ -266,7 +274,10 @@ pub fn analyze(line: &str, pos: usize) -> Context {
         Clause::Into if in_column_list && matches!(prev.as_str(), "(" | ",") => {
             vec![Expect::Columns]
         }
-        Clause::None | Clause::Relations | Clause::Into | Clause::Other => vec![Expect::Keywords],
+        Clause::Use if prev == "USE" => vec![Expect::Databases],
+        Clause::None | Clause::Relations | Clause::Into | Clause::Use | Clause::Other => {
+            vec![Expect::Keywords]
+        }
     };
     ctx
 }

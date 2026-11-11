@@ -5,8 +5,12 @@
 
 pub mod cli;
 pub mod client;
+pub mod connect;
+pub mod dialect;
 pub mod editor;
+pub mod paths;
 pub mod render;
+pub mod server;
 pub mod special;
 pub mod sql;
 pub mod tui;

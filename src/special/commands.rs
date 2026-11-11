@@ -1,8 +1,22 @@
 //! Handlers for the special commands.
 
+use clap::error::ErrorKind;
+
 use crate::client::{ClientError, ResultSet, Value};
+use crate::connect::{ServerArgs, split_words};
 use crate::render::Format;
+use crate::server::Server;
 use crate::tui::session::{Output, Session};
+
+/// The session's client, or return a not-connected error from the handler.
+macro_rules! client {
+    ($s:expr) => {
+        match $s.client_mut() {
+            Ok(c) => c,
+            Err(e) => return vec![Output::Error(e.to_string())],
+        }
+    };
+}
 
 fn fail(e: ClientError) -> Vec<Output> {
     vec![Output::Error(e.to_string())]
@@ -16,21 +30,21 @@ fn name_list(column: &str, names: Vec<String>) -> ResultSet {
 }
 
 pub fn tables(s: &mut Session, arg: Option<&str>) -> Vec<Output> {
-    match s.client.tables(arg) {
+    match client!(s).tables(arg) {
         Ok(t) => vec![Output::Text(s.render(&name_list("name", t)))],
         Err(e) => fail(e),
     }
 }
 
 pub fn views(s: &mut Session, arg: Option<&str>) -> Vec<Output> {
-    match s.client.views(arg) {
+    match client!(s).views(arg) {
         Ok(t) => vec![Output::Text(s.render(&name_list("name", t)))],
         Err(e) => fail(e),
     }
 }
 
 pub fn schema(s: &mut Session, arg: Option<&str>) -> Vec<Output> {
-    match s.client.schema(arg) {
+    match client!(s).schema(arg) {
         Ok(stmts) => {
             let mut text = String::new();
             for st in stmts {
@@ -44,14 +58,14 @@ pub fn schema(s: &mut Session, arg: Option<&str>) -> Vec<Output> {
 }
 
 pub fn indexes(s: &mut Session, arg: Option<&str>) -> Vec<Output> {
-    match s.client.indexes(arg) {
+    match client!(s).indexes(arg) {
         Ok(rs) => vec![Output::Text(s.render(&rs))],
         Err(e) => fail(e),
     }
 }
 
 pub fn databases(s: &mut Session, _arg: Option<&str>) -> Vec<Output> {
-    match s.client.databases() {
+    match client!(s).databases() {
         Ok(rs) => vec![Output::Text(s.render(&rs))],
         Err(e) => fail(e),
     }
@@ -61,7 +75,7 @@ pub fn describe(s: &mut Session, arg: Option<&str>) -> Vec<Output> {
     let Some(table) = arg else {
         return tables(s, None);
     };
-    match s.client.columns(table) {
+    match client!(s).columns(table) {
         Ok(cols) if cols.is_empty() => vec![Output::Error(format!("no such table: {table}"))],
         Ok(cols) => {
             let yes_no = |b: bool| Value::Text(if b { "YES" } else { "NO" }.into());
@@ -102,6 +116,32 @@ pub fn table_format(s: &mut Session, arg: Option<&str>) -> Vec<Output> {
             }
             Err(e) => vec![Output::Error(e)],
         },
+    }
+}
+
+/// `\\connect` alone opens the wizard; `\\connect <server> <args>` parses the
+/// server's connection arguments. The shell performs the actual connection.
+pub fn connect(_s: &mut Session, arg: Option<&str>) -> Vec<Output> {
+    let Some(arg) = arg else {
+        return vec![Output::ConnectWizard];
+    };
+    let words = match split_words(arg) {
+        Ok(w) => w,
+        Err(e) => return vec![Output::Error(e)],
+    };
+    let Some((name, rest)) = words.split_first() else {
+        return vec![Output::ConnectWizard];
+    };
+    let Some(server) = Server::parse(name) else {
+        return vec![Output::Error(format!(
+            "unknown server: {name} (supported: {})",
+            Server::names()
+        ))];
+    };
+    match server.parse_args(rest) {
+        Ok(opts) => vec![Output::Connect(opts)],
+        Err(e) if e.kind() == ErrorKind::DisplayHelp => vec![Output::Text(e.to_string())],
+        Err(e) => vec![Output::Error(e.to_string().trim_end().to_string())],
     }
 }
 

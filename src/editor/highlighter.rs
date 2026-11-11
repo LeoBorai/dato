@@ -1,14 +1,17 @@
 //! SQL syntax highlighting.
 
+use std::sync::{Arc, RwLock};
+
 use nu_ansi_term::{Color, Style};
 use reedline::{Highlighter, StyledText};
 
-use super::keywords::is_keyword;
-use crate::sql::{TokenKind, tokenize};
+use crate::dialect::Dialect;
+use crate::server::Server;
+use crate::sql::{TokenKind, tokenize_with};
 
-fn style_for(kind: TokenKind, text: &str, at_line_start: bool) -> Style {
+fn style_for(server: Server, kind: TokenKind, text: &str, at_line_start: bool) -> Style {
     match kind {
-        TokenKind::Word if is_keyword(text) => Style::new().bold().fg(Color::Blue),
+        TokenKind::Word if server.is_keyword(text) => Style::new().bold().fg(Color::Blue),
         TokenKind::String => Style::new().fg(Color::Green),
         TokenKind::QuotedIdent => Style::new().fg(Color::Yellow),
         TokenKind::Number => Style::new().fg(Color::Purple),
@@ -20,23 +23,40 @@ fn style_for(kind: TokenKind, text: &str, at_line_start: bool) -> Style {
     }
 }
 
-/// Styled spans covering `line` exactly, in order.
+/// Styled spans covering `line` exactly, in order, using SQLite rules.
 pub fn spans(line: &str) -> Vec<(Style, String)> {
+    spans_with(line, Server::Sqlite)
+}
+
+/// Styled spans covering `line` exactly, in order, for `server`'s dialect.
+pub fn spans_with(line: &str, server: Server) -> Vec<(Style, String)> {
     let mut out: Vec<(Style, String)> = Vec::new();
-    for tok in tokenize(line) {
+    for tok in tokenize_with(line, &server.lex_rules()) {
         let text = tok.text(line);
         let at_start = line[..tok.start].trim().is_empty();
-        out.push((style_for(tok.kind, text, at_start), text.to_string()));
+        out.push((
+            style_for(server, tok.kind, text, at_start),
+            text.to_string(),
+        ));
     }
     out
 }
 
-pub struct SqlHighlighter;
+/// Highlights with the dialect of the session's current server.
+pub struct SqlHighlighter {
+    dialect: Arc<RwLock<Server>>,
+}
+
+impl SqlHighlighter {
+    pub fn new(dialect: Arc<RwLock<Server>>) -> Self {
+        Self { dialect }
+    }
+}
 
 impl Highlighter for SqlHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
         let mut st = StyledText::new();
-        st.buffer = spans(line);
+        st.buffer = spans_with(line, *self.dialect.read().unwrap());
         st
     }
 }
@@ -59,6 +79,27 @@ mod tests {
         let line = "select 1 -- c\n, \"a\"";
         let joined: String = spans(line).into_iter().map(|(_, t)| t).collect();
         assert_eq!(joined, line);
+    }
+
+    #[test]
+    fn double_quotes_follow_the_dialect() {
+        let style = |server, text: &str| {
+            spans_with("select \"x\" # c", server)
+                .into_iter()
+                .find(|(_, t)| t == text)
+                .map(|(s, _)| s)
+        };
+        let string = spans("'s'")[0].0;
+        let ident = spans("\"i\"")[0].0;
+        let comment = spans("-- c")[0].0;
+        assert_eq!(style(Server::Sqlite, "\"x\""), Some(ident));
+        assert_eq!(style(Server::MySql, "\"x\""), Some(string));
+        assert_eq!(style(Server::MySql, "# c"), Some(comment));
+        assert_eq!(style(Server::Sqlite, "# c"), None);
+        // Keywords come from the server's list.
+        let show = |server| spans_with("show", server)[0].0;
+        assert_ne!(show(Server::MySql), Style::new());
+        assert_eq!(show(Server::Sqlite), Style::new());
     }
 
     #[test]

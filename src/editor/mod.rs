@@ -4,7 +4,6 @@ mod completer;
 mod context;
 pub mod external;
 mod highlighter;
-pub mod keywords;
 mod menu;
 mod validator;
 
@@ -15,10 +14,11 @@ use reedline::{
     ReedlineMenu, default_emacs_keybindings,
 };
 
+use crate::server::Server;
 use crate::tui::session::SchemaCache;
 
 pub use completer::{Candidate, Kind, SqlCompleter, candidates};
-pub use highlighter::{SqlHighlighter, spans};
+pub use highlighter::{SqlHighlighter, spans, spans_with};
 pub use validator::SqlValidator;
 
 use menu::QuietMenu;
@@ -27,7 +27,9 @@ const MENU: &str = "completion_menu";
 
 /// Builds the line editor. Ctrl-O opens `$VISUAL`/`$EDITOR`; Alt-Enter submits
 /// even when the statement looks unfinished.
-pub fn build(schema: Arc<RwLock<SchemaCache>>) -> Reedline {
+/// Completion follows `schema` (which names its server); highlighting and
+/// statement completeness follow `dialect`.
+pub fn build(schema: Arc<RwLock<SchemaCache>>, dialect: Arc<RwLock<Server>>) -> Reedline {
     let mut keys = default_emacs_keybindings();
     keys.add_binding(
         KeyModifiers::NONE,
@@ -78,8 +80,8 @@ pub fn build(schema: Arc<RwLock<SchemaCache>>) -> Reedline {
                 .with_default_border()
                 .with_word_chars("_$"),
         ))))
-        .with_highlighter(Box::new(SqlHighlighter))
-        .with_validator(Box::new(SqlValidator))
+        .with_highlighter(Box::new(SqlHighlighter::new(Arc::clone(&dialect))))
+        .with_validator(Box::new(SqlValidator::new(dialect)))
         .with_edit_mode(Box::new(Emacs::new(keys)));
 
     let command = external::editor_command();
@@ -87,7 +89,14 @@ pub fn build(schema: Arc<RwLock<SchemaCache>>) -> Reedline {
     if let Some(program) = parts.next() {
         let mut cmd = std::process::Command::new(program);
         cmd.args(parts);
-        editor = editor.with_buffer_editor(cmd, std::env::temp_dir().join("dato-edit.sql"));
+        // Ctrl-O buffer: `~/.dato/edit.sql`, or the temp dir without a home.
+        let buffer = crate::paths::edit_buffer()
+            .filter(|p| {
+                p.parent()
+                    .is_some_and(|d| crate::paths::ensure_dir(d).is_ok())
+            })
+            .unwrap_or_else(|| std::env::temp_dir().join("dato-edit.sql"));
+        editor = editor.with_buffer_editor(cmd, buffer);
     }
     editor
 }

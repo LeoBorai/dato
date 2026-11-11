@@ -1,35 +1,42 @@
-//! A connected session: runs inputs (SQL or special commands) and produces outputs.
-//! Shared by the interactive shell and by batch mode.
+//! A session: runs inputs (SQL or special commands) and produces outputs.
+//! Shared by the interactive shell and by batch mode. A session may be
+//! disconnected; `connect` opens or replaces its connection.
 
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use super::interrupt;
-use crate::client::{Client, ColumnInfo, ResultSet, StatementResult};
+use crate::client::{self as db, Client, ClientError, ConnectOptions, ResultSet, StatementResult};
+pub use crate::client::{Relation, RelationKind};
+use crate::dialect::Dialect;
 use crate::render::{Format, render_to_string};
+use crate::server::Server;
 use crate::{special, sql};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelationKind {
-    Table,
-    View,
-}
-
-/// A table or view with its columns.
-#[derive(Debug, Clone)]
-pub struct Relation {
-    pub name: String,
-    pub kind: RelationKind,
-    pub columns: Vec<ColumnInfo>,
-}
-
-/// What the editor completes from: relations sorted by name.
+/// What the editor completes from.
 #[derive(Debug, Default, Clone)]
 pub struct SchemaCache {
+    /// The connected server; `None` while disconnected.
+    pub server: Option<Server>,
+    /// Tables and views of the current database, sorted by name.
     pub relations: Vec<Relation>,
+    /// Databases on the server (servers with `db.` qualifiers only).
+    pub databases: Vec<String>,
+    /// `(database, table)` pairs across user databases, for `db.` completion.
+    pub qualified: Vec<(String, String)>,
 }
 
 impl SchemaCache {
+    /// The server whose dialect applies; SQLite rules while disconnected.
+    pub fn dialect(&self) -> Server {
+        self.server.unwrap_or(Server::Sqlite)
+    }
+
+    /// Whether `name` is a database on the server, ignoring case.
+    pub fn has_database(&self, name: &str) -> bool {
+        self.databases.iter().any(|d| d.eq_ignore_ascii_case(name))
+    }
+
     /// Finds a relation by name, ignoring case.
     pub fn find(&self, name: &str) -> Option<&Relation> {
         self.relations
@@ -48,13 +55,28 @@ pub enum Output {
     Error(String),
     /// The user asked to leave the shell.
     Quit,
+    /// `\\connect` without arguments: the shell should run the connect wizard.
+    ConnectWizard,
+    /// `\\connect <server> <args>`: the shell should connect with these options
+    /// (asking for the password first when the options require it).
+    Connect(ConnectOptions),
 }
 
+/// Returned when a command or query needs a connection and there is none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("not connected to a database; use \\connect")]
+pub struct NotConnected;
+
+/// Prompt label while disconnected.
+pub const DISCONNECTED_LABEL: &str = "(none)";
+
 pub struct Session {
-    pub(crate) client: Box<dyn Client>,
+    client: Option<Box<dyn Client>>,
     pub(crate) format: Format,
     show_status: bool,
     schema: Arc<RwLock<SchemaCache>>,
+    /// Server whose dialect the editor uses; SQLite while disconnected.
+    dialect: Arc<RwLock<Server>>,
 }
 
 pub fn status_line(result: &StatementResult, elapsed: Duration) -> String {
@@ -71,28 +93,61 @@ pub fn status_line(result: &StatementResult, elapsed: Duration) -> String {
     }
 }
 
-fn changes_schema(stmt: &str) -> bool {
-    let first = stmt
-        .split(|c: char| !c.is_alphanumeric())
-        .find(|w| !w.is_empty())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    matches!(
-        first.as_str(),
-        "create" | "drop" | "alter" | "attach" | "detach" | "rollback" | "pragma"
-    )
-}
-
 impl Session {
+    /// A session connected through `client`.
     pub fn new(client: Box<dyn Client>, format: Format, show_status: bool) -> Self {
-        let mut s = Self {
-            client,
+        let mut s = Self::disconnected(format, show_status);
+        s.replace_client(client);
+        s
+    }
+
+    /// A session without a connection.
+    pub fn disconnected(format: Format, show_status: bool) -> Self {
+        Self {
+            client: None,
             format,
             show_status,
             schema: Arc::default(),
-        };
-        s.refresh_schema();
-        s
+            dialect: Arc::new(RwLock::new(Server::Sqlite)),
+        }
+    }
+
+    /// Opens a connection for `opts` and, only if that succeeds, replaces the
+    /// current one. On failure the current connection is kept.
+    pub fn connect(&mut self, opts: &ConnectOptions) -> Result<(), ClientError> {
+        let client = db::open(opts)?;
+        self.replace_client(client);
+        Ok(())
+    }
+
+    fn replace_client(&mut self, client: Box<dyn Client>) {
+        *self.dialect.write().unwrap() = client.server();
+        // Drop the previous client (closing its connection) before refreshing.
+        self.client = Some(client);
+        self.refresh_schema();
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.client.is_some()
+    }
+
+    /// The connected server, if any.
+    pub fn server(&self) -> Option<Server> {
+        self.client.as_ref().map(|c| c.server())
+    }
+
+    /// The client, or [`NotConnected`].
+    pub fn client_mut(&mut self) -> Result<&mut (dyn Client + 'static), NotConnected> {
+        self.client.as_deref_mut().ok_or(NotConnected)
+    }
+
+    /// Shared handle to the server whose dialect the editor should use.
+    pub fn dialect(&self) -> Arc<RwLock<Server>> {
+        Arc::clone(&self.dialect)
+    }
+
+    fn current_dialect(&self) -> Server {
+        *self.dialect.read().unwrap()
     }
 
     pub fn schema(&self) -> Arc<RwLock<SchemaCache>> {
@@ -103,8 +158,10 @@ impl Session {
         self.format
     }
 
-    pub fn display_name(&self) -> String {
-        self.client.display_name()
+    pub fn prompt_label(&self) -> String {
+        self.client
+            .as_ref()
+            .map_or_else(|| DISCONNECTED_LABEL.to_string(), |c| c.prompt_label())
     }
 
     pub fn render(&self, rs: &ResultSet) -> String {
@@ -112,26 +169,27 @@ impl Session {
     }
 
     pub fn refresh_schema(&mut self) {
-        // `tables()` lists views too; `views()` tells which are views.
-        let names = self.client.tables(None).unwrap_or_default();
-        let views = self.client.views(None).unwrap_or_default();
-        let relations = names
-            .into_iter()
-            .map(|name| {
-                let kind = if views.contains(&name) {
-                    RelationKind::View
+        let cache = match self.client.as_deref_mut() {
+            Some(c) => {
+                let server = c.server();
+                let (databases, qualified) = if server.qualifies_databases() {
+                    (
+                        c.database_names().unwrap_or_default(),
+                        c.qualified_tables().unwrap_or_default(),
+                    )
                 } else {
-                    RelationKind::Table
+                    Default::default()
                 };
-                let columns = self.client.columns(&name).unwrap_or_default();
-                Relation {
-                    name,
-                    kind,
-                    columns,
+                SchemaCache {
+                    server: Some(server),
+                    relations: c.relations().unwrap_or_default(),
+                    databases,
+                    qualified,
                 }
-            })
-            .collect();
-        *self.schema.write().unwrap() = SchemaCache { relations };
+            }
+            None => SchemaCache::default(),
+        };
+        *self.schema.write().unwrap() = cache;
     }
 
     /// Runs one complete input and returns what to print, in order.
@@ -143,15 +201,20 @@ impl Session {
         if special::is_special(trimmed) {
             return special::dispatch(self, trimmed);
         }
+        let dialect = self.current_dialect();
+        let Some(client) = self.client.as_deref_mut() else {
+            return vec![Output::Error(NotConnected.to_string())];
+        };
         let (body, vertical) = sql::split_vertical(input);
-        let statements = sql::split_statements(body);
+        let statements = sql::split_statements_with(body, &dialect.lex_rules());
         let mut outputs = Vec::new();
+        let mut refresh = false;
         let last = statements.len().saturating_sub(1);
         for (i, stmt) in statements.iter().enumerate() {
             let started = Instant::now();
             let result = {
-                let _armed = interrupt::arm(self.client.interrupt_handle());
-                self.client.execute(stmt)
+                let _armed = interrupt::arm(client.interrupt_handle());
+                client.execute(stmt)
             };
             let elapsed = started.elapsed();
             match result {
@@ -172,18 +235,17 @@ impl Session {
                             outputs.push(Output::Status(status_line(r, elapsed)));
                         }
                     }
-                    if changes_schema(stmt) {
-                        self.refresh_schema();
-                    }
+                    refresh |= dialect.changes_schema(stmt);
                 }
                 Err(e) => {
                     outputs.push(Output::Error(e.to_string()));
-                    if changes_schema(stmt) {
-                        self.refresh_schema();
-                    }
+                    refresh |= dialect.changes_schema(stmt);
                     break;
                 }
             }
+        }
+        if refresh {
+            self.refresh_schema();
         }
         outputs
     }
@@ -203,6 +265,7 @@ mod tests {
             .map(|o| match o {
                 Output::Text(t) | Output::Status(t) | Output::Error(t) => t.clone(),
                 Output::Quit => "<quit>".into(),
+                other => format!("{other:?}"),
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -281,6 +344,38 @@ mod tests {
     }
 
     #[test]
+    fn sql_while_disconnected_suggests_connect() {
+        let mut s = Session::disconnected(Format::Ascii, false);
+        assert!(!s.is_connected());
+        assert_eq!(s.prompt_label(), "(none)");
+        let out = s.handle("select 1;");
+        assert!(
+            matches!(&out[0], Output::Error(e) if e.contains("\\connect")),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn connect_replaces_and_failure_keeps_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.db");
+        let mut s = Session::disconnected(Format::Tsv, false);
+        s.connect(&ConnectOptions::sqlite(a.to_str())).unwrap();
+        s.handle("create table only_in_a(x);");
+        assert!(s.schema().read().unwrap().find("only_in_a").is_some());
+
+        let bad = dir.path().join("missing-dir").join("b.db");
+        assert!(s.connect(&ConnectOptions::sqlite(bad.to_str())).is_err());
+        assert!(s.prompt_label().ends_with("a.db"));
+        assert!(s.schema().read().unwrap().find("only_in_a").is_some());
+
+        s.connect(&ConnectOptions::sqlite(None)).unwrap();
+        assert_eq!(s.prompt_label(), ":memory:");
+        assert!(s.schema().read().unwrap().relations.is_empty());
+        assert_eq!(s.server(), Some(Server::Sqlite));
+    }
+
+    #[test]
     fn status_line_formats() {
         let d = Duration::from_millis(1500);
         assert_eq!(
@@ -295,14 +390,25 @@ mod tests {
 
     #[test]
     fn interrupt_slot_cancels_running_query() {
+        use std::sync::atomic::{AtomicBool, Ordering};
         let mut s = session(false);
-        let t = std::thread::spawn(|| {
-            std::thread::sleep(Duration::from_millis(150));
-            interrupt::trigger();
+        // The interrupt slot is process-wide and other tests running in parallel
+        // re-arm and clear it, so re-arm this session's handle before each trigger
+        // until the query has returned.
+        let handle = s.client_mut().unwrap().interrupt_handle();
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&done);
+        let t = std::thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(50));
+                let _armed = interrupt::arm(Arc::clone(&handle));
+                interrupt::trigger();
+            }
         });
         let out = s.handle(
             "with recursive c(x) as (select 1 union all select x+1 from c) select count(*) from c;",
         );
+        done.store(true, Ordering::Relaxed);
         t.join().unwrap();
         assert!(matches!(&out[0], Output::Error(e) if e.contains("interrupted")));
         assert!(texts(&s.handle("select 1;")).contains("| 1 |"));

@@ -1,4 +1,20 @@
-//! SQLite keywords used for completion and highlighting.
+//! SQLite dialect: keywords, lexical rules and schema-changing statements.
+
+use super::LexRules;
+
+pub const RULES: LexRules = LexRules {
+    double_quote_is_string: false,
+    bracket_idents: true,
+    backslash_escapes: false,
+    hash_comments: false,
+    dash_comment_needs_space: false,
+    trigger_bodies: true,
+};
+
+/// First words of statements that can change the visible schema.
+pub const SCHEMA_CHANGES: &[&str] = &[
+    "alter", "attach", "create", "detach", "drop", "pragma", "rollback",
+];
 
 pub const KEYWORDS: &[&str] = &[
     "ABORT",
@@ -150,12 +166,6 @@ pub const KEYWORDS: &[&str] = &[
     "WITHOUT",
 ];
 
-pub fn is_keyword(word: &str) -> bool {
-    KEYWORDS
-        .binary_search(&word.to_ascii_uppercase().as_str())
-        .is_ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,12 +173,5 @@ mod tests {
     #[test]
     fn list_is_sorted_for_binary_search() {
         assert!(KEYWORDS.windows(2).all(|w| w[0] < w[1]));
-    }
-
-    #[test]
-    fn keyword_lookup_ignores_case() {
-        assert!(is_keyword("select"));
-        assert!(is_keyword("WHERE"));
-        assert!(!is_keyword("users"));
     }
 }

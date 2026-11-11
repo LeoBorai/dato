@@ -126,6 +126,10 @@ impl SqliteClient {
 }
 
 impl Client for SqliteClient {
+    fn server(&self) -> crate::server::Server {
+        crate::server::Server::Sqlite
+    }
+
     fn execute(&mut self, sql: &str) -> Result<Vec<StatementResult>, ClientError> {
         let mut results = Vec::new();
         for stmt in split_statements(sql) {
@@ -212,7 +216,7 @@ impl Client for SqliteClient {
         Arc::new(SqliteInterrupt(self.conn.get_interrupt_handle()))
     }
 
-    fn display_name(&self) -> String {
+    fn prompt_label(&self) -> String {
         self.name.clone()
     }
 }

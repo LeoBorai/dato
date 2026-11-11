@@ -85,6 +85,7 @@ fn plain(v: &Value) -> String {
         Value::Null => String::new(),
         Value::Integer(i) => i.to_string(),
         Value::Real(r) => format!("{r:?}"),
+        Value::Numeric(n) => n.clone(),
         Value::Text(t) => t.clone(),
         Value::Blob(b) => format!("x'{}'", hex(b)),
     }

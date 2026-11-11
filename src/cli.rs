@@ -3,32 +3,65 @@
 use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
-use crate::client::{self, Target};
+use crate::client::ConnectOptions;
+use crate::connect::{MySqlArgs, SqliteArgs, ask_password};
 use crate::render::Format;
 use crate::sql::is_complete;
-use crate::tui::{self, session::Session};
+use crate::tui::{
+    self,
+    session::{Output, Session},
+};
 
 #[derive(Debug, Parser)]
 #[command(
     name = "dato",
     version,
-    about = "Database CLI with completion and table formats"
+    about = "Database CLI with completion and table formats",
+    args_conflicts_with_subcommands = true
 )]
 pub struct Args {
-    /// Database to open: a SQLite file path, `:memory:`, or a server URL
-    /// (postgres://, mysql://). Defaults to an in-memory SQLite database.
+    #[command(subcommand)]
+    pub command: Option<ServerCommand>,
+
+    /// SQLite database file or `:memory:`; shorthand for `dato sqlite FILE`.
+    /// Without a target the interactive shell starts disconnected.
     pub target: Option<String>,
 
     /// Run this SQL and exit.
-    #[arg(short = 'e', long = "execute", value_name = "SQL")]
+    #[arg(short = 'e', long = "execute", value_name = "SQL", global = true)]
     pub execute: Option<String>,
 
     /// Output format: ascii, psql, markdown, csv, tsv, json, vertical.
-    #[arg(short = 'f', long = "format", value_name = "FORMAT")]
+    #[arg(short = 'T', long = "format", value_name = "FORMAT", global = true)]
     pub format: Option<Format>,
 }
+
+/// One subcommand per server.
+#[derive(Debug, Subcommand)]
+pub enum ServerCommand {
+    Sqlite(SqliteArgs),
+    Mysql(MySqlArgs),
+}
+
+/// Where to connect at startup: `Ok(None)` means start disconnected.
+pub fn startup_options(args: &Args) -> Result<Option<ConnectOptions>, String> {
+    match (&args.command, args.target.as_deref()) {
+        (Some(ServerCommand::Sqlite(a)), _) => Ok(Some(a.options())),
+        (Some(ServerCommand::Mysql(a)), _) => Ok(Some(a.options())),
+        (None, Some(t)) if t.contains("://") => Err(format!(
+            "URL targets are not supported: {t}; use `dato mysql -h HOST -u USER -p DB` \
+             or `dato sqlite FILE`"
+        )),
+        (None, Some(t)) => Ok(Some(ConnectOptions::sqlite(Some(t)))),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Error when one-shot or piped execution has nothing to run against.
+pub const TARGET_REQUIRED: &str =
+    "a database target is required with -e or piped input (e.g. `dato app.db` or `dato mysql ...`)";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -80,9 +113,13 @@ pub fn run_batch(
     }
     for input in inputs {
         let outputs = session.handle(&input);
-        let failed = outputs
-            .iter()
-            .any(|o| matches!(o, tui::session::Output::Error(_)));
+        // `\\connect` needs the interactive shell; `emit` reports it as an error.
+        let failed = outputs.iter().any(|o| {
+            matches!(
+                o,
+                Output::Error(_) | Output::ConnectWizard | Output::Connect(_)
+            )
+        });
         let quit = tui::emit(&outputs, out, err);
         if failed {
             return 1;
@@ -100,15 +137,31 @@ pub fn run() -> ExitCode {
     let interactive = mode == Mode::Interactive;
     let format = default_format(&args, interactive, io::stdout().is_terminal());
 
-    let target = Target::parse(args.target.as_deref());
-    let client = match client::open(&target) {
-        Ok(c) => c,
+    let opts = match startup_options(&args) {
+        Ok(o) => o,
         Err(e) => {
             eprintln!("Error: {e}");
-            return ExitCode::from(1);
+            return ExitCode::from(2);
         }
     };
-    let mut session = Session::new(client, format, interactive);
+    let mut session = Session::disconnected(format, interactive);
+    match opts {
+        None if !interactive => {
+            eprintln!("Error: {TARGET_REQUIRED}");
+            return ExitCode::from(1);
+        }
+        None => {}
+        Some(mut opts) => {
+            if let Err(e) = ask_password(&mut opts) {
+                eprintln!("Error: cannot read password: {e}");
+                return ExitCode::from(1);
+            }
+            if let Err(e) = session.connect(&opts) {
+                eprintln!("Error: {e}");
+                return ExitCode::from(1);
+            }
+        }
+    }
 
     let code = match mode {
         Mode::Interactive => tui::run(session),
@@ -155,15 +208,56 @@ mod tests {
         assert_eq!(default_format(&a, false, true), Format::Ascii);
         assert_eq!(default_format(&a, false, false), Format::Tsv);
         assert_eq!(
-            default_format(&parse(&["-f", "csv"]), false, false),
+            default_format(&parse(&["-T", "csv"]), false, false),
+            Format::Csv
+        );
+        assert_eq!(
+            default_format(&parse(&["--format", "json"]), false, false),
+            Format::Json
+        );
+        assert_eq!(
+            default_format(&parse(&["mysql", "-u", "root", "-T", "csv"]), false, false),
             Format::Csv
         );
     }
 
     #[test]
     fn invalid_format_is_rejected() {
-        let e = Args::try_parse_from(["dato", "-f", "bogus"]).unwrap_err();
+        let e = Args::try_parse_from(["dato", "-T", "bogus"]).unwrap_err();
         assert!(e.to_string().contains("valid formats"));
+        assert!(Args::try_parse_from(["dato", "-f", "csv"]).is_err());
+    }
+
+    #[test]
+    fn startup_targets() {
+        let opts = |argv: &[&str]| startup_options(&parse(argv));
+        assert_eq!(opts(&[]), Ok(None));
+        assert_eq!(
+            opts(&["app.db"]),
+            Ok(Some(ConnectOptions::sqlite(Some("app.db"))))
+        );
+        assert_eq!(opts(&["sqlite", "app.db"]), opts(&["app.db"]));
+        assert_eq!(opts(&["sqlite"]), Ok(Some(ConnectOptions::sqlite(None))));
+        assert!(matches!(
+            opts(&["mysql", "-h", "db.local", "-u", "app", "-p", "shop", "-e", "select 1"]),
+            Ok(Some(ConnectOptions::MySql(o)))
+                if o.host == "db.local" && o.user == "app" && o.password_required
+                    && o.database.as_deref() == Some("shop")
+        ));
+        let err = opts(&["mysql://root@localhost/shop"]).unwrap_err();
+        assert!(err.contains("dato mysql"), "{err}");
+    }
+
+    #[test]
+    fn mysql_subcommand_help_and_password_flag() {
+        let help = Args::try_parse_from(["dato", "mysql", "-h", "db.local", "--help"]).unwrap_err();
+        assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+        assert!(help.to_string().contains("-h, --host"), "{help}");
+        assert!(Args::try_parse_from(["dato", "mysql", "-u", "root", "-psecret"]).is_err());
+        assert!(matches!(
+            parse(&["mysql", "-D", "shop", "-e", "select database();"]).command,
+            Some(ServerCommand::Mysql(_))
+        ));
     }
 
     fn run_script(script: &str) -> (i32, String, String) {
@@ -196,6 +290,19 @@ mod tests {
         assert_eq!(code, 1);
         assert!(out.is_empty());
         assert!(err.contains("no such table: missing"));
+    }
+
+    #[test]
+    fn batch_rejects_connect() {
+        for script in ["\\connect sqlite a.db\nselect 1;", "\\connect\n"] {
+            let (code, out, err) = run_script(script);
+            assert_eq!(code, 1, "{script}");
+            assert!(out.is_empty());
+            assert!(
+                err.contains("\\connect is only available in the interactive shell"),
+                "{err}"
+            );
+        }
     }
 
     #[test]

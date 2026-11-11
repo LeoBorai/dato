@@ -2,7 +2,7 @@
 
 mod commands;
 
-use crate::tui::session::{Output, Session};
+use crate::tui::session::{NotConnected, Output, Session};
 
 type Handler = fn(&mut Session, Option<&str>) -> Vec<Output>;
 
@@ -10,6 +10,8 @@ pub struct SpecialCommand {
     pub names: &'static [&'static str],
     pub syntax: &'static str,
     pub help: &'static str,
+    /// Fails with a not-connected error while the session has no connection.
+    pub needs_connection: bool,
     run: Handler,
 }
 
@@ -18,54 +20,70 @@ pub static COMMANDS: &[SpecialCommand] = &[
         names: &[".tables", "\\dt"],
         syntax: ".tables [prefix]",
         help: "List tables and views.",
+        needs_connection: true,
         run: commands::tables,
     },
     SpecialCommand {
         names: &[".views", "\\dv"],
         syntax: ".views [prefix]",
         help: "List views.",
+        needs_connection: true,
         run: commands::views,
     },
     SpecialCommand {
         names: &[".schema"],
         syntax: ".schema [table]",
         help: "Show CREATE statements, for all objects or one table.",
+        needs_connection: true,
         run: commands::schema,
     },
     SpecialCommand {
         names: &[".indexes", "\\di"],
         syntax: ".indexes [table]",
         help: "List indexes.",
+        needs_connection: true,
         run: commands::indexes,
     },
     SpecialCommand {
         names: &[".databases", "\\l"],
         syntax: ".databases",
         help: "List attached databases.",
+        needs_connection: true,
         run: commands::databases,
     },
     SpecialCommand {
         names: &["\\d", "describe"],
         syntax: "\\d [table]",
         help: "Describe a table's columns; without argument, list tables.",
+        needs_connection: true,
         run: commands::describe,
     },
     SpecialCommand {
         names: &["\\T"],
         syntax: "\\T [format]",
         help: "Set the output format; without argument, show it.",
+        needs_connection: false,
         run: commands::table_format,
+    },
+    SpecialCommand {
+        names: &["\\connect"],
+        syntax: "\\connect [server [args]]",
+        help: "Connect to a database; without arguments, choose interactively.",
+        needs_connection: false,
+        run: commands::connect,
     },
     SpecialCommand {
         names: &["help", "\\?", ".help"],
         syntax: "help",
         help: "Show this help.",
+        needs_connection: false,
         run: commands::help,
     },
     SpecialCommand {
         names: &["quit", "exit", "\\q", ".quit"],
         syntax: "quit",
         help: "Quit the shell.",
+        needs_connection: false,
         run: commands::quit,
     },
 ];
@@ -115,6 +133,9 @@ pub fn symbolic_names() -> impl Iterator<Item = &'static str> {
 pub fn dispatch(session: &mut Session, input: &str) -> Vec<Output> {
     let (cmd, arg) = split_command(input);
     match lookup(cmd) {
+        Some(c) if c.needs_connection && !session.is_connected() => {
+            vec![Output::Error(NotConnected.to_string())]
+        }
         Some(c) => (c.run)(session, arg),
         None => vec![Output::Error(format!(
             "unknown command: {cmd} (type `help` for the list)"
@@ -137,6 +158,7 @@ mod tests {
             .map(|o| match o {
                 Output::Text(t) | Output::Status(t) | Output::Error(t) => t.clone(),
                 Output::Quit => "<quit>".into(),
+                other => format!("{other:?}"),
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -243,6 +265,51 @@ mod tests {
         let mut s = session();
         let t = text(&s.handle("help"));
         assert!(t.contains(".tables") && t.contains(".schema") && t.contains("\\T"));
+    }
+
+    #[test]
+    fn disconnected_commands() {
+        let mut s = Session::disconnected(Format::Ascii, false);
+        assert!(text(&s.handle("help")).contains(".tables"));
+        assert!(text(&s.handle("\\T csv")).contains("csv"));
+        for cmd in [".tables", "\\d users", ".schema", ".databases"] {
+            let out = s.handle(cmd);
+            assert!(
+                matches!(&out[0], Output::Error(e) if e.contains("\\connect")),
+                "{cmd}: {out:?}"
+            );
+        }
+        assert_eq!(s.handle("quit"), vec![Output::Quit]);
+    }
+
+    #[test]
+    fn connect_command() {
+        use crate::client::ConnectOptions;
+        let mut s = Session::disconnected(Format::Ascii, false);
+        assert_eq!(s.handle("\\connect"), vec![Output::ConnectWizard]);
+        assert_eq!(
+            s.handle("\\connect sqlite x.db"),
+            vec![Output::Connect(ConnectOptions::sqlite(Some("x.db")))]
+        );
+        assert!(matches!(
+            &s.handle("\\connect mysql -h db.local -u app -p shop")[0],
+            Output::Connect(ConnectOptions::MySql(o))
+                if o.host == "db.local" && o.password_required
+        ));
+        let out = s.handle("\\connect postgres");
+        assert!(
+            matches!(&out[0], Output::Error(e) if e.contains("postgres") && e.contains("sqlite, mysql")),
+            "{out:?}"
+        );
+        assert!(matches!(
+            &s.handle("\\connect mysql --bogus")[0],
+            Output::Error(_)
+        ));
+        assert!(
+            matches!(&s.handle("\\connect mysql --help")[0], Output::Text(t) if t.contains("--host"))
+        );
+        assert!(text(&s.handle("help")).contains("\\connect"));
+        assert!(symbolic_names().any(|n| n == "\\connect"));
     }
 
     #[test]

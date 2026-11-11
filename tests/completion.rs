@@ -1,12 +1,12 @@
 //! Completion against a real in-memory SQLite session.
 
-use dato::client::{Target, open};
+use dato::client::{ConnectOptions, open};
 use dato::editor::{Candidate, candidates};
 use dato::render::Format;
 use dato::tui::session::Session;
 
 fn session() -> Session {
-    let client = open(&Target::parse(Some(":memory:"))).unwrap();
+    let client = open(&ConnectOptions::sqlite(None)).unwrap();
     Session::new(client, Format::Ascii, false)
 }
 
