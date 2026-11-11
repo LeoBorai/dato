@@ -28,6 +28,7 @@ skip = [
     # Older copies pulled in by mysql_common; drop once it moves to the newer versions.
     { crate = "base64@0.22.1" },
     { crate = "getrandom@0.3.4" },
+    { crate = "r-efi@5.3.0" },
 ]
 
 [sources]
