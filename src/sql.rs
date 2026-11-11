@@ -58,6 +58,49 @@ fn scan_quoted(b: &[u8], i: usize, close: u8, doubling: bool, backslash: bool) -
     (b.len(), false)
 }
 
+/// Scans a dollar-quoted string starting at `i` (a `$`). Returns `None` when `$`
+/// does not open one (`$1`, a lone `$`), else (end, terminated).
+fn scan_dollar_quoted(b: &[u8], i: usize) -> Option<(usize, bool)> {
+    let mut j = i + 1;
+    // The tag is empty or starts with a letter or underscore, so `$1` is not one.
+    if b.get(j).is_some_and(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_' || b[j] >= 0x80) {
+        j += 1;
+    }
+    if b.get(j) != Some(&b'$') {
+        return None;
+    }
+    let tag = &b[i..=j];
+    let body = j + 1;
+    match b[body..].windows(tag.len()).position(|w| w == tag) {
+        Some(p) => Some((body + p + tag.len(), true)),
+        None => Some((b.len(), false)),
+    }
+}
+
+/// Scans a block comment starting at `i` (`/*`). Returns (end, terminated).
+fn scan_block_comment(b: &[u8], i: usize, nested: bool) -> (usize, bool) {
+    let mut j = i + 2;
+    let mut depth = 1usize;
+    while j < b.len() {
+        if b[j] == b'*' && b.get(j + 1) == Some(&b'/') {
+            j += 2;
+            depth -= 1;
+            if depth == 0 {
+                return (j, true);
+            }
+        } else if nested && b[j] == b'/' && b.get(j + 1) == Some(&b'*') {
+            j += 2;
+            depth += 1;
+        } else {
+            j += 1;
+        }
+    }
+    (b.len(), false)
+}
+
 /// Splits `src` into contiguous tokens covering every byte, using SQLite rules.
 pub fn tokenize(src: &str) -> Vec<Token> {
     tokenize_with(src, &sqlite::RULES)
@@ -76,6 +119,14 @@ pub fn tokenize_with(src: &str, rules: &LexRules) -> Vec<Token> {
                 j += 1;
             }
             (TokenKind::Whitespace, j, true)
+        } else if rules.escape_strings && matches!(c, b'e' | b'E') && b.get(i + 1) == Some(&b'\'') {
+            let (e, t) = scan_quoted(b, i + 1, b'\'', true, true);
+            (TokenKind::String, e, t)
+        } else if c == b'$'
+            && rules.dollar_quotes
+            && let Some((e, t)) = scan_dollar_quoted(b, i)
+        {
+            (TokenKind::String, e, t)
         } else if c == b'\'' || (c == b'"' && rules.double_quote_is_string) {
             let (e, t) = scan_quoted(b, i, c, true, rules.backslash_escapes);
             (TokenKind::String, e, t)
@@ -97,17 +148,8 @@ pub fn tokenize_with(src: &str, rules: &LexRules) -> Vec<Token> {
             }
             (TokenKind::LineComment, j, true)
         } else if c == b'/' && b.get(i + 1) == Some(&b'*') {
-            let mut j = i + 2;
-            let mut term = false;
-            while j < b.len() {
-                if b[j] == b'*' && b.get(j + 1) == Some(&b'/') {
-                    j += 2;
-                    term = true;
-                    break;
-                }
-                j += 1;
-            }
-            (TokenKind::BlockComment, j.min(b.len()), term)
+            let (e, t) = scan_block_comment(b, i, rules.nested_block_comments);
+            (TokenKind::BlockComment, e, t)
         } else if c.is_ascii_digit() || (c == b'.' && b.get(i + 1).is_some_and(u8::is_ascii_digit))
         {
             let mut j = i + 1;

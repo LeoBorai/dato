@@ -9,6 +9,9 @@ pub const RULES: LexRules = LexRules {
     hash_comments: false,
     dash_comment_needs_space: false,
     trigger_bodies: true,
+    dollar_quotes: false,
+    nested_block_comments: false,
+    escape_strings: false,
 };
 
 /// First words of statements that can change the visible schema.

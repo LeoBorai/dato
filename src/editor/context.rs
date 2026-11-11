@@ -21,6 +21,8 @@ pub enum Expect {
 /// A table or view named in the statement, with its alias when it has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reference {
+    /// `schema` of a `schema.table` reference.
+    pub schema: Option<String>,
     pub name: String,
     pub alias: Option<String>,
 }
@@ -35,6 +37,8 @@ pub struct Context {
     pub expect: Vec<Expect>,
     /// `name` of a `name.fragment` being typed.
     pub qualifier: Option<String>,
+    /// `schema` of a `schema.name.fragment` being typed.
+    pub outer_qualifier: Option<String>,
     /// Relations named anywhere in the current statement, before or after the cursor.
     pub references: Vec<Reference>,
 }
@@ -140,10 +144,11 @@ fn references(server: Server, line: &str, toks: &[&Token]) -> Vec<Reference> {
         while let Some(mut name) = toks.get(i).and_then(|t| ident(line, t)) {
             i += 1;
             // `schema.table` names the table.
+            let mut schema = None;
             while toks.get(i).is_some_and(|t| t.text(line) == ".")
                 && let Some(part) = toks.get(i + 1).and_then(|t| ident(line, t))
             {
-                name = part;
+                schema = Some(std::mem::replace(&mut name, part));
                 i += 2;
             }
             let mut alias = None;
@@ -160,7 +165,11 @@ fn references(server: Server, line: &str, toks: &[&Token]) -> Vec<Reference> {
                 alias = Some(a);
                 i += 1;
             }
-            out.push(Reference { name, alias });
+            out.push(Reference {
+                schema,
+                name,
+                alias,
+            });
             if toks.get(i).is_some_and(|t| t.text(line) == ",") {
                 i += 1;
             } else {
@@ -185,6 +194,7 @@ pub fn analyze_with(line: &str, pos: usize, server: Server) -> Context {
         prefix: line[start..pos].to_string(),
         expect: Vec::new(),
         qualifier: None,
+        outer_qualifier: None,
         references: Vec::new(),
     };
 
@@ -214,6 +224,12 @@ pub fn analyze_with(line: &str, pos: usize, server: Server) -> Context {
         let q = fragment_start(before, before.len());
         if q < before.len() {
             ctx.qualifier = Some(before[q..].to_string());
+            if let Some(outer) = before[..q].strip_suffix('.') {
+                let o = fragment_start(outer, outer.len());
+                if o < outer.len() {
+                    ctx.outer_qualifier = Some(outer[o..].to_string());
+                }
+            }
         }
     }
 

@@ -3,7 +3,7 @@
 use clap::error::ErrorKind;
 
 use crate::client::{ClientError, ResultSet, Value};
-use crate::connect::{ServerArgs, split_words};
+use crate::connect::split_words;
 use crate::render::Format;
 use crate::server::Server;
 use crate::tui::session::{Output, Session};

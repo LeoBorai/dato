@@ -67,4 +67,21 @@ mod tests {
             ValidationResult::Incomplete
         ));
     }
+
+    #[test]
+    fn waits_for_semicolon_outside_dollar_quotes() {
+        let v = SqlValidator::new(Arc::new(RwLock::new(Server::PostgreSql)));
+        assert!(matches!(
+            v.validate("do $$ begin perform 1;"),
+            ValidationResult::Incomplete
+        ));
+        assert!(matches!(
+            v.validate("do $$ begin perform 1; end $$;"),
+            ValidationResult::Complete
+        ));
+        assert!(matches!(
+            v.validate("select 1 /* open"),
+            ValidationResult::Incomplete
+        ));
+    }
 }

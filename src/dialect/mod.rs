@@ -4,6 +4,7 @@
 //! trait; each server has its own submodule with its rules and keyword list.
 
 pub mod mysql;
+pub mod psql;
 pub mod sqlite;
 
 use crate::server::Server;
@@ -23,6 +24,23 @@ pub struct LexRules {
     pub dash_comment_needs_space: bool,
     /// `CREATE TRIGGER ... BEGIN ... END` bodies are not split at inner `;` (SQLite).
     pub trigger_bodies: bool,
+    /// `$$...$$` and `$tag$...$tag$` are string literals (PostgreSQL).
+    pub dollar_quotes: bool,
+    /// `/* */` comments nest (PostgreSQL).
+    pub nested_block_comments: bool,
+    /// `E'...'` is a string with backslash escapes (PostgreSQL).
+    pub escape_strings: bool,
+}
+
+/// What `name.` in front of a table can refer to besides a table or alias.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Qualifier {
+    /// Nothing: names are not qualified (SQLite).
+    None,
+    /// Another database on the server (MySQL `db.table`).
+    Database,
+    /// A schema of the current database (PostgreSQL `schema.table`).
+    Schema,
 }
 
 /// The dialect layer of [`Server`].
@@ -33,8 +51,8 @@ pub trait Dialect {
     /// Whether a statement can change the visible schema, so the completion
     /// cache must be refreshed after it.
     fn changes_schema(&self, stmt: &str) -> bool;
-    /// Whether `name.` may refer to another database (MySQL `db.table`).
-    fn qualifies_databases(&self) -> bool;
+    /// What `name.` may refer to besides a table or alias.
+    fn qualifier(&self) -> Qualifier;
 
     fn is_keyword(&self, word: &str) -> bool {
         self.keywords()
@@ -56,6 +74,7 @@ impl Dialect for Server {
         match self {
             Server::Sqlite => sqlite::RULES,
             Server::MySql => mysql::RULES,
+            Server::PostgreSql => psql::RULES,
         }
     }
 
@@ -63,6 +82,7 @@ impl Dialect for Server {
         match self {
             Server::Sqlite => sqlite::KEYWORDS,
             Server::MySql => mysql::KEYWORDS,
+            Server::PostgreSql => psql::KEYWORDS,
         }
     }
 
@@ -70,14 +90,16 @@ impl Dialect for Server {
         let words = match self {
             Server::Sqlite => sqlite::SCHEMA_CHANGES,
             Server::MySql => mysql::SCHEMA_CHANGES,
+            Server::PostgreSql => psql::SCHEMA_CHANGES,
         };
         words.contains(&first_word(stmt).as_str())
     }
 
-    fn qualifies_databases(&self) -> bool {
+    fn qualifier(&self) -> Qualifier {
         match self {
-            Server::Sqlite => false,
-            Server::MySql => true,
+            Server::Sqlite => Qualifier::None,
+            Server::MySql => Qualifier::Database,
+            Server::PostgreSql => Qualifier::Schema,
         }
     }
 }
@@ -85,6 +107,28 @@ impl Dialect for Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn postgres_keywords_are_its_own() {
+        assert!(Server::PostgreSql.is_keyword("returning"));
+        assert!(!Server::PostgreSql.is_keyword("pragma"));
+        assert!(!Server::PostgreSql.is_keyword("show_foo"));
+        assert!(!Server::MySql.is_keyword("returning"));
+    }
+
+    #[test]
+    fn postgres_schema_changes() {
+        for stmt in [
+            "set search_path to sales",
+            "alter table a rename to b",
+            "comment on table a is 'x'",
+        ] {
+            assert!(Server::PostgreSql.changes_schema(stmt), "{stmt}");
+        }
+        assert!(!Server::PostgreSql.changes_schema("select 1"));
+        assert!(!Server::PostgreSql.changes_schema("use crm"));
+        assert!(!Server::MySql.changes_schema("set search_path to x"));
+    }
 
     #[test]
     fn server_specific_keywords() {
@@ -96,6 +140,13 @@ mod tests {
             assert!(s.is_keyword("select") && s.is_keyword("WHERE"));
             assert!(!s.is_keyword("users"));
         }
+    }
+
+    #[test]
+    fn qualifier_per_server() {
+        assert_eq!(Server::Sqlite.qualifier(), Qualifier::None);
+        assert_eq!(Server::MySql.qualifier(), Qualifier::Database);
+        assert_eq!(Server::PostgreSql.qualifier(), Qualifier::Schema);
     }
 
     #[test]

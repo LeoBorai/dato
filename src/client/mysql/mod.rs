@@ -1,6 +1,9 @@
 //! MySQL client built on the sync `mysql` crate.
 
+mod options;
 mod value;
+
+pub use options::MySqlOptions;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,8 +13,8 @@ use mysql::prelude::Queryable;
 use mysql::{Conn, Opts, OptsBuilder, Params, Row};
 
 use super::{
-    Client, ClientError, ColumnInfo, Interrupt, MySqlOptions, Relation, RelationKind, ResultSet,
-    StatementResult, Value,
+    Client, ClientError, ColumnInfo, Interrupt, Relation, RelationKind, ResultSet, StatementResult,
+    Value,
 };
 use crate::dialect;
 use crate::server::Server;
@@ -326,6 +329,7 @@ impl Client for MySqlClient {
                     RelationKind::Table
                 };
                 out.push(Relation {
+                    schema: None,
                     name,
                     kind,
                     columns: Vec::new(),

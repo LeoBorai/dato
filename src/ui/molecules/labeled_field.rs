@@ -1,15 +1,72 @@
 //! A label, a text or password input, and an optional error line.
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent};
 use nu_ansi_term::{Color, Style};
 
 use crate::ui::atoms::{PasswordInput, TextInput};
-use crate::ui::{Line, Step, Widget};
+use crate::ui::{Line, Step, Widget, is_cancel};
+
+/// One of a few fixed values, picked with the arrow keys.
+#[derive(Debug, Clone)]
+pub struct Choice {
+    options: Vec<String>,
+    selected: usize,
+}
+
+impl Choice {
+    /// `selected` falls back to the first option when it is not one of them.
+    /// `options` must not be empty.
+    pub fn new(options: &[&str], selected: &str) -> Self {
+        assert!(!options.is_empty(), "Choice needs at least one option");
+        Self {
+            options: options.iter().map(|o| o.to_string()).collect(),
+            selected: options.iter().position(|o| *o == selected).unwrap_or(0),
+        }
+    }
+
+    pub fn value(&self) -> String {
+        self.options[self.selected].clone()
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> Step<String> {
+        if is_cancel(&key) {
+            return Step::Cancel;
+        }
+        let n = self.options.len();
+        match key.code {
+            KeyCode::Left | KeyCode::Up | KeyCode::BackTab => {
+                self.selected = (self.selected + n - 1) % n
+            }
+            KeyCode::Right | KeyCode::Down | KeyCode::Tab => {
+                self.selected = (self.selected + 1) % n
+            }
+            KeyCode::Enter => return Step::Done(self.value()),
+            _ => {}
+        }
+        Step::Continue
+    }
+
+    /// `(*) a  ( ) b  ( ) c`, or just the picked value when `done`.
+    fn render_value(&self, done: bool) -> Line {
+        if done {
+            return Line::plain(self.value());
+        }
+        let text = self
+            .options
+            .iter()
+            .enumerate()
+            .map(|(i, o)| format!("({}) {o}", if i == self.selected { '*' } else { ' ' }))
+            .collect::<Vec<_>>()
+            .join("  ");
+        Line::styled(Style::new().fg(Color::Cyan), text)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum FieldInput {
     Text(TextInput),
     Password(PasswordInput),
+    Choice(Choice),
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +89,7 @@ impl LabeledField {
         match &self.input {
             FieldInput::Text(t) => t.value(),
             FieldInput::Password(p) => p.value(),
+            FieldInput::Choice(ch) => ch.value(),
         }
     }
 
@@ -49,6 +107,7 @@ impl LabeledField {
         line.extend(match &self.input {
             FieldInput::Text(t) => t.render_value(),
             FieldInput::Password(p) => p.render_value(),
+            FieldInput::Choice(ch) => ch.render_value(true),
         });
         line
     }
@@ -62,6 +121,7 @@ impl Widget for LabeledField {
         match &mut self.input {
             FieldInput::Text(t) => t.on_key(key),
             FieldInput::Password(p) => p.on_key(key),
+            FieldInput::Choice(ch) => ch.on_key(key),
         }
     }
 
@@ -70,6 +130,7 @@ impl Widget for LabeledField {
         let input = match &self.input {
             FieldInput::Text(t) => t.render(),
             FieldInput::Password(p) => p.render(),
+            FieldInput::Choice(ch) => vec![ch.render_value(false)],
         };
         if let Some(first) = input.into_iter().next() {
             line.extend(first);
@@ -106,5 +167,28 @@ mod tests {
         feed(&mut f, typed("secret"));
         assert_eq!(f.render_done().text(), "Password: ******");
         assert_eq!(f.value(), "secret");
+    }
+
+    #[test]
+    fn choice_field_cycles_and_picks() {
+        use crossterm::event::KeyCode;
+        let mut f = LabeledField::new(
+            "TLS mode",
+            FieldInput::Choice(Choice::new(&["disable", "prefer", "require"], "disable")),
+        );
+        assert_eq!(
+            f.render()[0].text(),
+            "TLS mode: (*) disable  ( ) prefer  ( ) require"
+        );
+        let key = |code| crate::ui::test_keys::key(code);
+        feed(&mut f, [key(KeyCode::Right), key(KeyCode::Right)]);
+        assert_eq!(f.value(), "require");
+        feed(&mut f, [key(KeyCode::Right)]);
+        assert_eq!(f.value(), "disable");
+        feed(&mut f, [key(KeyCode::Left)]);
+        assert_eq!(f.value(), "require");
+        assert_eq!(feed(&mut f, [enter()]), Step::Done("require".into()));
+        assert_eq!(f.render_done().text(), "TLS mode: require");
+        assert_eq!(feed(&mut f, [key(KeyCode::Esc)]), Step::Cancel);
     }
 }

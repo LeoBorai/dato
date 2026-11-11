@@ -2,11 +2,11 @@
 name = "dato"
 version = "0.0.2"
 edition = "2024"
-description = "Database Client TUI for SQLite and MySQL"
+description = "Database Client TUI for SQLite, MySQL and PostgreSQL"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/LeoBorai/dato"
 readme = "README.md"
-keywords = ["sqlite", "mysql", "cli", "repl", "database"]
+keywords = ["sqlite", "mysql", "postgres", "cli", "database"]
 categories = ["command-line-utilities", "database"]
 include = ["/src", "/tests", "/README.md", "/Cargo.toml", "/Cargo.lock"]
 
@@ -25,12 +25,16 @@ ctrlc = "3"
 dirs = "7"
 mysql = { version = "28.0.4", default-features = false, features = ["minimal-rust"] }
 nu-ansi-term = "0.50"
+postgres = "0.19"
 reedline = "~0.53"
 rpassword = "7.5.5"
 rusqlite = { version = "0.41", features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
 tempfile = "3"
 thiserror = "2"
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring"] }
 unicode-width = "0.2"
 
 [dev-dependencies]

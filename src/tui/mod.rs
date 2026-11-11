@@ -12,8 +12,8 @@ use reedline::{
     PromptHistorySearchStatus, Signal,
 };
 
+use crate::cli::cmd::ask_password;
 use crate::client::ConnectOptions;
-use crate::connect::ask_password;
 use crate::editor::{self, external};
 use crate::paths;
 use crate::ui::organisms::{ConnectWizard, Pager, too_wide};

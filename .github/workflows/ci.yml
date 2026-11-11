@@ -79,6 +79,52 @@ jobs:
       - name: MySQL tests
         run: cargo nextest run --test mysql
 
+  psql:
+    name: PostgreSQL integration tests
+    runs-on: ubuntu-latest
+    env:
+      DATO_PSQL_URL: postgres://postgres:dato@127.0.0.1:5432
+      DATO_PSQL_CA: ${{ github.workspace }}/pgcerts/ca.crt
+    steps:
+      - uses: actions/checkout@v7
+
+      # A private CA and an end-entity server certificate: the verifier rejects a
+      # self-signed certificate that is its own CA.
+      - name: PostgreSQL server with TLS
+        run: |
+          mkdir pgcerts && cd pgcerts
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=dato test CA" \
+            -keyout ca.key -out ca.crt
+          openssl req -newkey rsa:2048 -nodes -subj "/CN=localhost" \
+            -keyout server.key -out server.csr
+          printf "subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n" > ext.cnf
+          openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+            -days 2 -extfile ext.cnf -out server.crt
+          # The server reads its key as the `postgres` user (uid 999) and insists on 0600.
+          # chmod first: after the chown the runner user may no longer change the mode.
+          chmod 600 server.key
+          sudo chown 999:999 server.key server.crt
+          docker run -d --name pg -p 5432:5432 -e POSTGRES_PASSWORD=dato \
+            -v "$PWD:/certs:ro" postgres:17 \
+            -c ssl=on -c ssl_cert_file=/certs/server.crt -c ssl_key_file=/certs/server.key
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres -h 127.0.0.1 && exit 0
+            sleep 2
+          done
+          docker logs pg
+          exit 1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: PostgreSQL tests
+        run: cargo nextest run --test psql
+
   deny:
     name: Dependencies (cargo-deny)
     runs-on: ubuntu-latest

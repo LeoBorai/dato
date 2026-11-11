@@ -113,6 +113,44 @@ fn mysql_help_lists_login_arguments() {
 }
 
 #[test]
+fn psql_help_lists_only_psql_arguments() {
+    dato().args(["psql", "--help"]).assert().success().stdout(
+        predicate::str::contains("-h, --host")
+            .and(predicate::str::contains("-p, --port"))
+            .and(predicate::str::contains("-U, --username"))
+            .and(predicate::str::contains("-d, --dbname"))
+            .and(predicate::str::contains("-W, --password"))
+            .and(predicate::str::contains("--sslmode"))
+            .and(predicate::str::contains("--socket").not()),
+    );
+}
+
+#[test]
+fn psql_rejects_other_servers_flags_and_bad_sslmode() {
+    dato().args(["psql", "-P", "5433"]).assert().failure();
+    dato()
+        .args(["psql", "-U", "x", "-Wsecret"])
+        .assert()
+        .failure();
+    dato()
+        .args(["psql", "--sslmode", "bogus"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "disable, prefer, require, verify-full",
+        ));
+}
+
+#[test]
+fn postgres_url_target_suggests_subcommands() {
+    dato()
+        .arg("postgres://app@localhost/shop")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("dato psql"));
+}
+
+#[test]
 fn mysql_attached_password_is_rejected() {
     dato()
         .args(["mysql", "-u", "root", "-psecret"])
