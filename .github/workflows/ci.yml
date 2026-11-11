@@ -48,6 +48,37 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo package --locked
 
+  mysql:
+    name: MySQL integration tests
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: dato
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pdato"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATO_MYSQL_URL: mysql://root:dato@127.0.0.1:3306
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: MySQL tests
+        run: cargo nextest run --test mysql
+
   deny:
     name: Dependencies (cargo-deny)
     runs-on: ubuntu-latest

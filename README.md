@@ -21,15 +21,43 @@ cargo install dato
 ## Usage
 
 ```sh
-dato app.db                                 # interactive shell; creates app.db if missing
-dato                                        # in-memory database
+dato app.db                                 # SQLite shell; creates app.db if missing
+dato sqlite app.db                          # same, with the explicit subcommand
+dato :memory:                               # in-memory SQLite database
+dato mysql -h db.local -u app -p shop       # MySQL shell; asks for the password
+dato                                        # shell without a connection; use \connect
 dato app.db -e "select * from users;"       # run SQL and exit
 echo "select 1 as n;" | dato :memory:       # run SQL from stdin
-dato app.db -f csv -e "select * from t;"    # choose the output format
+dato app.db -T csv -e "select * from t;"    # choose the output format (--format)
 ```
 
 When output is piped, the default format is `tsv`; on a terminal it is `ascii`.
 In batch mode the first failing statement stops the run with exit status 1.
+`-e` and piped input need a database target.
+
+### Servers
+
+| Server | Arguments |
+|---|---|
+| `sqlite` | `[FILE]`: database file, or `:memory:` (default) |
+| `mysql` | `-h/--host` (default `localhost`), `-P/--port` (default `3306`), `-u/--user` (default: OS user), `-p/--password` (prompt, no echo), `-S/--socket`, `-D/--database` or `DB` |
+
+The MySQL login arguments follow the `mysql` client. Use `--help` for help: `-h` is the host.
+
+### Connecting from the shell
+
+`\connect` opens a wizard: pick a server with the arrow keys, then fill in its fields
+(the password is masked). `\connect <server> <args>` connects directly with the same
+arguments as the CLI, e.g. `\connect mysql -u root -p shop` or `\connect sqlite other.db`.
+A successful connect replaces the current connection; a failed one keeps it.
+
+### Migrating from 0.0.1
+
+- `-f FORMAT` is now `-T FORMAT` / `--format FORMAT`.
+- `dato` with no target starts disconnected instead of opening an in-memory database;
+  use `dato :memory:` for the old behavior.
+- URL targets are not accepted: use `dato mysql -h HOST -u USER -p DB` instead of
+  `dato mysql://USER@HOST/DB`.
 
 ## Shell commands
 
@@ -39,9 +67,10 @@ In batch mode the first failing statement stops the run with exit status 1.
 | `.views [prefix]`, `\dv` | List views |
 | `.schema [table]` | Show `CREATE` statements |
 | `.indexes [table]`, `\di` | List indexes |
-| `.databases`, `\l` | List attached databases |
+| `.databases`, `\l` | List databases (SQLite: attached; MySQL: schemas) |
 | `\d [table]`, `describe` | Describe a table's columns |
 | `\T [format]` | Show or set the output format |
+| `\connect [server [args]]` | Connect to a database; without arguments, choose interactively |
 | `<sql>\G` | Run a query in vertical format |
 | `help`, `\?` | List commands |
 | `quit`, `exit`, `\q` | Leave the shell |
@@ -61,13 +90,34 @@ In batch mode the first failing statement stops the run with exit status 1.
 | Ctrl-C | Cancel a running query, or clear the input |
 | Ctrl-D | Exit |
 
-History is saved in the platform data directory (`dato/history`).
+Results wider than the terminal open in a viewer instead of wrapping:
+Left/Right (or `h`/`l`) scroll 8 columns, Home/End jump to the edges,
+Up/Down/PageUp/PageDown scroll rows of tall results, and `q`, Enter or Esc close it.
+The last view stays on screen.
+
+Application data lives in `~/.dato` (created with mode `0700` on Unix):
+
+| File | Contents |
+|---|---|
+| `~/.dato/history` | Shell history (last 1000 entries) |
+| `~/.dato/edit.sql`, `~/.dato/edit-*.sql` | Buffers for the external editor (Ctrl-O, `\e`) |
+
+History from the previous location (`<data dir>/dato/history`) is copied to
+`~/.dato/history` on first start; the old file is left in place.
 
 ## Development
 
 ```sh
 cargo install cargo-nextest --locked
 just test
+```
+
+The MySQL integration tests (`tests/mysql.rs`) run only when `DATO_MYSQL_URL` is set.
+The user must be able to create and drop databases (each test uses its own `dato_test_*`):
+
+```sh
+docker run -d --name dato-mysql -e MYSQL_ROOT_PASSWORD=dato -p 3306:3306 mysql:8.4
+DATO_MYSQL_URL=mysql://root:dato@127.0.0.1:3306 cargo nextest run --test mysql
 ```
 
 ## License
