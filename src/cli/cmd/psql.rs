@@ -1,4 +1,4 @@
-//! `dato psql [-h HOST] [-p PORT] [-U USER] [-W] [--sslmode MODE] [db NAME]`.
+//! `dato psql [-h HOST] [-p PORT] -U USER [-W] [--sslmode MODE] [db NAME]`.
 //!
 //! Login arguments follow the `psql` client.
 
@@ -6,7 +6,7 @@ use clap::{ArgAction, Parser};
 
 use super::{DbCmd, ServerCmd};
 use crate::client::psql::SslMode;
-use crate::client::{ConnectOptions, PsqlOptions, default_user};
+use crate::client::{ConnectOptions, PsqlOptions};
 use crate::server::Server;
 
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
@@ -24,15 +24,15 @@ pub struct PostgreSql {
     #[arg(short = 'p', long, default_value_t = 5432)]
     pub port: u16,
 
-    /// User name. Defaults to the current OS user.
-    #[arg(short = 'U', long)]
-    pub username: Option<String>,
+    /// User name.
+    #[arg(short = 'U', long, required = true)]
+    pub username: String,
 
     /// Ask for the password (input is not echoed).
     #[arg(short = 'W', long)]
     pub password: bool,
 
-    /// Without the `db` subcommand the database is the user name.
+    /// Without the `db` subcommand the database is the user name (as `psql` does).
     #[command(subcommand)]
     pub db: Option<DbCmd>,
 
@@ -57,7 +57,7 @@ impl ServerCmd for PostgreSql {
         ConnectOptions::Psql(PsqlOptions {
             host: self.host.clone(),
             port: self.port,
-            user: self.username.clone().unwrap_or_else(default_user),
+            user: self.username.clone(),
             password: None,
             password_required: self.password,
             dbname: self.db.as_ref().map(DbCmd::name),
@@ -103,16 +103,15 @@ mod tests {
 
     #[test]
     fn defaults() {
-        let o = psql("").unwrap();
+        let o = psql("-U app").unwrap();
         assert_eq!((o.host.as_str(), o.port), ("localhost", 5432));
-        assert_eq!(o.user, default_user());
         assert_eq!(o.dbname, None);
     }
 
     #[test]
     fn rejects_other_servers_flags_and_attached_password() {
-        assert!(psql("-P 5433").is_err());
-        assert!(psql("-S /tmp/s.sock").is_err());
+        assert!(psql("-U app -P 5433").is_err());
+        assert!(psql("-U app -S /tmp/s.sock").is_err());
         assert!(psql("-U postgres -Wsecret").is_err());
         assert!(psql("-d a").is_err());
         assert!(psql("shop").is_err());
@@ -120,7 +119,7 @@ mod tests {
 
     #[test]
     fn invalid_sslmode_lists_valid_modes() {
-        let err = psql("--sslmode bogus").unwrap_err().to_string();
+        let err = psql("-U app --sslmode bogus").unwrap_err().to_string();
         assert!(
             err.contains("disable, prefer, require, verify-full"),
             "{err}"

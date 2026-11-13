@@ -190,7 +190,7 @@ mod tests {
         // host -> port
         feed(&mut w, [enter()]);
         assert!(screen(&w).contains("Port: 3306"));
-        // port -> user: replace default user with "app"
+        // port -> user: type "app"
         feed(&mut w, [enter(), ctrl('u')]);
         feed(&mut w, typed("app"));
         feed(&mut w, [enter()]);
@@ -257,7 +257,7 @@ mod tests {
         assert!(s.contains("Host: localhost"), "{s}");
         feed(&mut w, [enter()]);
         assert!(screen(&w).contains("Port: 5432"));
-        // port -> user: replace the default user
+        // port -> user: type "app"
         feed(&mut w, [enter(), ctrl('u')]);
         feed(&mut w, typed("app"));
         feed(&mut w, [enter()]);
@@ -296,8 +296,11 @@ mod tests {
         use crate::client::psql::SslMode;
         let mut w = ConnectWizard::new();
         feed(&mut w, [key(KeyCode::Down), key(KeyCode::Down), enter()]);
-        // host, port, user, password, database
-        feed(&mut w, [enter(), enter(), enter(), enter(), enter()]);
+        // host, port
+        feed(&mut w, [enter(), enter()]);
+        feed(&mut w, typed("app"));
+        // user, password, database
+        feed(&mut w, [enter(), enter(), enter()]);
         feed(&mut w, [key(KeyCode::Right), key(KeyCode::Right)]);
         assert!(screen(&w).contains("( ) disable  ( ) prefer  (*) require"));
         let done = feed(&mut w, [enter()]);

@@ -1,7 +1,5 @@
 //! MySQL login parameters.
 
-use crate::client::default_user;
-
 /// From `dato mysql`, `\connect mysql` or the wizard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MySqlOptions {
@@ -20,7 +18,7 @@ impl Default for MySqlOptions {
         Self {
             host: "localhost".into(),
             port: 3306,
-            user: default_user(),
+            user: String::new(),
             password: None,
             password_required: false,
             socket: None,

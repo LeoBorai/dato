@@ -3,8 +3,6 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::client::default_user;
-
 /// How the connection uses TLS, named as libpq's `sslmode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SslMode {
@@ -90,7 +88,7 @@ impl Default for PsqlOptions {
         Self {
             host: "localhost".into(),
             port: 5432,
-            user: default_user(),
+            user: String::new(),
             password: None,
             password_required: false,
             dbname: None,

@@ -303,7 +303,7 @@ mod tests {
                     && o.dbname.as_deref() == Some("shop")
         ));
         assert!(matches!(
-            &s.handle("\\connect PSQL")[0],
+            &s.handle("\\connect PSQL -U app")[0],
             Output::Connect(ConnectOptions::Psql(_))
         ));
         // Another server's flag is rejected.

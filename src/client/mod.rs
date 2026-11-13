@@ -111,13 +111,6 @@ pub trait Client: Send {
     }
 }
 
-/// The current OS user, the default login of the `mysql` and `psql` clients.
-pub fn default_user() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "root".into())
-}
-
 /// Where and how to connect. One variant per [`Server`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectOptions {

@@ -259,7 +259,16 @@ mod tests {
         assert!(help.to_string().contains("-h, --host"), "{help}");
         assert!(Args::try_parse_from(["dato", "mysql", "-u", "root", "-psecret"]).is_err());
         assert!(matches!(
-            parse(&["mysql", "-e", "select database();", "db", "shop"]).command,
+            parse(&[
+                "mysql",
+                "-u",
+                "app",
+                "-e",
+                "select database();",
+                "db",
+                "shop"
+            ])
+            .command,
             Some(Command::Mysql(_))
         ));
     }
@@ -334,7 +343,7 @@ mod tests {
         assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
         assert!(help.to_string().contains("--sslmode"), "{help}");
         assert!(Args::try_parse_from(["dato", "psql", "-U", "x", "-Wsecret"]).is_err());
-        assert!(Args::try_parse_from(["dato", "psql", "-P", "5433"]).is_err());
+        assert!(Args::try_parse_from(["dato", "psql", "-U", "x", "-P", "5433"]).is_err());
     }
 
     #[test]

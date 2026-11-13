@@ -1,11 +1,11 @@
-//! `dato mysql [-h HOST] [-P PORT] [-u USER] [-p] [-S SOCKET] [db NAME]`.
+//! `dato mysql [-h HOST] [-P PORT] -u USER [-p] [-S SOCKET] [db NAME]`.
 //!
 //! Login arguments follow the `mysql` client.
 
 use clap::{ArgAction, Parser};
 
 use super::{DbCmd, ServerCmd};
-use crate::client::{ConnectOptions, MySqlOptions, default_user};
+use crate::client::{ConnectOptions, MySqlOptions};
 use crate::server::Server;
 
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
@@ -23,9 +23,9 @@ pub struct MySql {
     #[arg(short = 'P', long, default_value_t = 3306)]
     pub port: u16,
 
-    /// User name. Defaults to the current OS user.
-    #[arg(short = 'u', long)]
-    pub user: Option<String>,
+    /// User name.
+    #[arg(short = 'u', long, required = true)]
+    pub user: String,
 
     /// Ask for the password (input is not echoed).
     #[arg(short = 'p', long)]
@@ -50,7 +50,7 @@ impl ServerCmd for MySql {
         ConnectOptions::MySql(MySqlOptions {
             host: self.host.clone(),
             port: self.port,
-            user: self.user.clone().unwrap_or_else(default_user),
+            user: self.user.clone(),
             password: None,
             password_required: self.password,
             socket: self.socket.clone(),
@@ -92,9 +92,8 @@ mod tests {
 
     #[test]
     fn defaults() {
-        let o = mysql("").unwrap();
+        let o = mysql("-u app").unwrap();
         assert_eq!((o.host.as_str(), o.port), ("localhost", 3306));
-        assert_eq!(o.user, default_user());
         assert_eq!(o.database, None);
     }
 
@@ -110,7 +109,8 @@ mod tests {
 
     #[test]
     fn port_flag_is_only_for_mysql() {
-        assert!(mysql("-P 3307").is_ok());
-        assert!(mysql("-U app").is_err());
+        assert!(mysql("-u app -P 3307").is_ok());
+        assert!(mysql("-u app -U app").is_err());
+        assert!(mysql("").is_err());
     }
 }

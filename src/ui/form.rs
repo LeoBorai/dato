@@ -2,7 +2,7 @@
 //! how their values become [`ConnectOptions`].
 
 use crate::client::psql::SslMode;
-use crate::client::{ConnectOptions, MySqlOptions, PsqlOptions, default_user};
+use crate::client::{ConnectOptions, MySqlOptions, PsqlOptions};
 use crate::server::Server;
 
 /// One field of a server's connect form.
@@ -86,7 +86,7 @@ impl ConnectForm for Server {
             Server::MySql => vec![
                 Field::text("host", "Host", "localhost"),
                 Field::text("port", "Port", "3306"),
-                Field::text("user", "User", default_user()),
+                Field::text("user", "User", ""),
                 Field {
                     secret: true,
                     ..Field::text("password", "Password", "")
@@ -96,7 +96,7 @@ impl ConnectForm for Server {
             Server::PostgreSql => vec![
                 Field::text("host", "Host", "localhost"),
                 Field::text("port", "Port", "5432"),
-                Field::text("user", "User", default_user()),
+                Field::text("user", "User", ""),
                 Field {
                     secret: true,
                     ..Field::text("password", "Password", "")
@@ -121,7 +121,10 @@ impl ConnectForm for Server {
                 Ok(ConnectOptions::MySql(MySqlOptions {
                     host: v.optional("host").unwrap_or(defaults.host),
                     port,
-                    user: v.optional("user").unwrap_or(defaults.user),
+                    user: v.optional("user").ok_or_else(|| FieldError {
+                        key: "user",
+                        message: "user is required".into(),
+                    })?,
                     // Entered in the form, so never asked for again.
                     password: Some(v.get("password").to_string()).filter(|p| !p.is_empty()),
                     password_required: false,
@@ -146,7 +149,10 @@ impl ConnectForm for Server {
                 Ok(ConnectOptions::Psql(PsqlOptions {
                     host: v.optional("host").unwrap_or(defaults.host),
                     port,
-                    user: v.optional("user").unwrap_or(defaults.user),
+                    user: v.optional("user").ok_or_else(|| FieldError {
+                        key: "user",
+                        message: "user is required".into(),
+                    })?,
                     // Entered in the form, so never asked for again.
                     password: Some(v.get("password").to_string()).filter(|p| !p.is_empty()),
                     password_required: false,
@@ -264,7 +270,7 @@ mod tests {
         );
         // No TLS unless picked.
         let o = Server::PostgreSql
-            .build(&values(&[("port", "5432")]))
+            .build(&values(&[("user", "app"), ("port", "5432")]))
             .unwrap();
         assert!(matches!(o, ConnectOptions::Psql(p) if p.sslmode == SslMode::Disable));
         let err = Server::PostgreSql
