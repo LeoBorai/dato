@@ -1,10 +1,10 @@
-//! `dato mysql [-h HOST] [-P PORT] [-u USER] [-p] [-S SOCKET] [-D DB | DB]`.
+//! `dato mysql [-h HOST] [-P PORT] [-u USER] [-p] [-S SOCKET] [db NAME]`.
 //!
 //! Login arguments follow the `mysql` client.
 
 use clap::{ArgAction, Parser};
 
-use super::ServerCmd;
+use super::{DbCmd, ServerCmd};
 use crate::client::{ConnectOptions, MySqlOptions, default_user};
 use crate::server::Server;
 
@@ -35,18 +35,8 @@ pub struct MySql {
     #[arg(short = 'S', long)]
     pub socket: Option<String>,
 
-    /// Database to use.
-    #[arg(
-        short = 'D',
-        long = "database",
-        value_name = "DB",
-        conflicts_with = "db"
-    )]
-    pub database: Option<String>,
-
-    /// Database to use (same as -D).
-    #[arg(value_name = "DB")]
-    pub db: Option<String>,
+    #[command(subcommand)]
+    pub db: Option<DbCmd>,
 
     /// Print help.
     #[arg(long, action = ArgAction::Help)]
@@ -64,7 +54,7 @@ impl ServerCmd for MySql {
             password: None,
             password_required: self.password,
             socket: self.socket.clone(),
-            database: self.database.clone().or_else(|| self.db.clone()),
+            database: self.db.as_ref().map(DbCmd::name),
         })
     }
 }
@@ -86,7 +76,7 @@ mod tests {
 
     #[test]
     fn login_args() {
-        let o = mysql("-h db.local -P 3307 -u app -p shop").unwrap();
+        let o = mysql("-h db.local -P 3307 -u app -p db shop").unwrap();
         assert_eq!(o.host, "db.local");
         assert_eq!(o.port, 3307);
         assert_eq!(o.user, "app");
@@ -94,7 +84,7 @@ mod tests {
         assert_eq!(o.password, None);
         assert_eq!(o.database.as_deref(), Some("shop"));
 
-        let o = mysql("--host x --user root -D crm -S /tmp/m.sock").unwrap();
+        let o = mysql("--host x --user root -S /tmp/m.sock db crm").unwrap();
         assert_eq!(o.database.as_deref(), Some("crm"));
         assert_eq!(o.socket.as_deref(), Some("/tmp/m.sock"));
         assert!(!o.password_required);
@@ -114,7 +104,8 @@ mod tests {
         let help = mysql("--help").unwrap_err();
         assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
         assert!(help.to_string().contains("-h, --host"), "{help}");
-        assert!(mysql("-D a b").is_err());
+        assert!(mysql("-D a").is_err());
+        assert!(mysql("shop").is_err());
     }
 
     #[test]

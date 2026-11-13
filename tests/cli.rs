@@ -108,7 +108,7 @@ fn mysql_help_lists_login_arguments() {
             .and(predicate::str::contains("-u, --user"))
             .and(predicate::str::contains("-p, --password"))
             .and(predicate::str::contains("-S, --socket"))
-            .and(predicate::str::contains("-D, --database")),
+            .and(predicate::str::contains("-D, --database").not()),
     );
 }
 
@@ -118,7 +118,7 @@ fn psql_help_lists_only_psql_arguments() {
         predicate::str::contains("-h, --host")
             .and(predicate::str::contains("-p, --port"))
             .and(predicate::str::contains("-U, --username"))
-            .and(predicate::str::contains("-d, --dbname"))
+            .and(predicate::str::contains("-d, --dbname").not())
             .and(predicate::str::contains("-W, --password"))
             .and(predicate::str::contains("--sslmode"))
             .and(predicate::str::contains("--socket").not()),
