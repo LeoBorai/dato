@@ -4,10 +4,11 @@
 
 use clap::{ArgAction, Parser};
 
-use super::{DbCmd, ServerCmd};
 use crate::client::psql::SslMode;
 use crate::client::{ConnectOptions, PsqlOptions};
 use crate::server::Server;
+
+use super::ServerCmd;
 
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 #[command(
@@ -32,9 +33,8 @@ pub struct PostgreSql {
     #[arg(short = 'W', long)]
     pub password: bool,
 
-    /// Without the `db` subcommand the database is the user name (as `psql` does).
-    #[command(subcommand)]
-    pub db: Option<DbCmd>,
+    #[arg(short = 'd', long = "dbname")]
+    pub db: Option<String>,
 
     /// TLS mode: disable, prefer, require or verify-full.
     #[arg(long, value_name = "MODE", default_value = "prefer")]
@@ -60,7 +60,7 @@ impl ServerCmd for PostgreSql {
             user: self.username.clone(),
             password: None,
             password_required: self.password,
-            dbname: self.db.as_ref().map(DbCmd::name),
+            dbname: self.db.to_owned(),
             sslmode: self.sslmode,
             sslrootcert: self.sslrootcert.clone(),
         })

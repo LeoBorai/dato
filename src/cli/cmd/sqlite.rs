@@ -2,9 +2,10 @@
 
 use clap::Parser;
 
-use super::ServerCmd;
 use crate::client::ConnectOptions;
 use crate::server::Server;
+
+use super::ServerCmd;
 
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 #[command(name = "sqlite", about = "Connect to a SQLite database file")]

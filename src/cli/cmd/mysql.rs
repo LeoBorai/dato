@@ -4,9 +4,10 @@
 
 use clap::{ArgAction, Parser};
 
-use super::{DbCmd, ServerCmd};
 use crate::client::{ConnectOptions, MySqlOptions};
 use crate::server::Server;
+
+use super::ServerCmd;
 
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 #[command(
@@ -35,8 +36,8 @@ pub struct MySql {
     #[arg(short = 'S', long)]
     pub socket: Option<String>,
 
-    #[command(subcommand)]
-    pub db: Option<DbCmd>,
+    /// The name of the database to connect to
+    pub db: Option<String>,
 
     /// Print help.
     #[arg(long, action = ArgAction::Help)]
@@ -54,7 +55,7 @@ impl ServerCmd for MySql {
             password: None,
             password_required: self.password,
             socket: self.socket.clone(),
-            database: self.db.as_ref().map(DbCmd::name),
+            database: self.db.to_owned(),
         })
     }
 }
