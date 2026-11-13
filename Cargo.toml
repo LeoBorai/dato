@@ -1,6 +1,6 @@
 [package]
 name = "dato"
-version = "0.0.5"
+version = "0.0.6"
 edition = "2024"
 description = "Database Client TUI for SQLite, MySQL and PostgreSQL"
 license = "MIT OR Apache-2.0"
