@@ -55,8 +55,8 @@ pub fn startup_options(args: &Args) -> Result<Option<ConnectOptions>, String> {
         (Some(Command::Mysql(a)), _) => Ok(Some(a.options())),
         (Some(Command::Psql(a)), _) => Ok(Some(a.options())),
         (None, Some(t)) if t.contains("://") => Err(format!(
-            "URL targets are not supported: {t}; use `dato psql -h HOST -U USER -W db NAME`, \
-             `dato mysql -h HOST -u USER -p db NAME` or `dato sqlite FILE`"
+            "URL targets are not supported: {t}; use `dato psql -h HOST -U USER -W -d NAME`, \
+             `dato mysql -h HOST -u USER -p NAME` or `dato sqlite FILE`"
         )),
         (None, Some(t)) => Ok(Some(ConnectOptions::sqlite(Some(t)))),
         (None, None) => Ok(None),
@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(opts(&["sqlite", "app.db"]), opts(&["app.db"]));
         assert_eq!(opts(&["sqlite"]), Ok(Some(ConnectOptions::sqlite(None))));
         assert!(matches!(
-            opts(&["mysql", "-h", "db.local", "-u", "app", "-p", "-e", "select 1", "db", "shop"]),
+            opts(&["mysql", "-h", "db.local", "-u", "app", "-p", "-e", "select 1", "shop"]),
             Ok(Some(ConnectOptions::MySql(o)))
                 if o.host == "db.local" && o.user == "app" && o.password_required
                     && o.database.as_deref() == Some("shop")
@@ -259,16 +259,7 @@ mod tests {
         assert!(help.to_string().contains("-h, --host"), "{help}");
         assert!(Args::try_parse_from(["dato", "mysql", "-u", "root", "-psecret"]).is_err());
         assert!(matches!(
-            parse(&[
-                "mysql",
-                "-u",
-                "app",
-                "-e",
-                "select database();",
-                "db",
-                "shop"
-            ])
-            .command,
+            parse(&["mysql", "-u", "app", "-e", "select database();", "shop"]).command,
             Some(Command::Mysql(_))
         ));
     }
@@ -328,7 +319,7 @@ mod tests {
     #[test]
     fn psql_subcommand_and_password_prompt() {
         let args = parse(&[
-            "psql", "-h", "db.local", "-U", "app", "-W", "-e", "select 1", "db", "shop",
+            "psql", "-h", "db.local", "-U", "app", "-W", "-e", "select 1", "-d", "shop",
         ]);
         let Ok(Some(mut o)) = startup_options(&args) else {
             panic!("psql options")

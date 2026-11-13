@@ -1,12 +1,13 @@
-//! `dato mysql [-h HOST] [-P PORT] -u USER [-p] [-S SOCKET] [db NAME]`.
+//! `dato mysql [-h HOST] [-P PORT] -u USER [-p] [-S SOCKET] [DB]`.
 //!
 //! Login arguments follow the `mysql` client.
 
 use clap::{ArgAction, Parser};
 
-use super::{DbCmd, ServerCmd};
 use crate::client::{ConnectOptions, MySqlOptions};
 use crate::server::Server;
+
+use super::ServerCmd;
 
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 #[command(
@@ -35,8 +36,8 @@ pub struct MySql {
     #[arg(short = 'S', long)]
     pub socket: Option<String>,
 
-    #[command(subcommand)]
-    pub db: Option<DbCmd>,
+    /// The name of the database to connect to
+    pub db: Option<String>,
 
     /// Print help.
     #[arg(long, action = ArgAction::Help)]
@@ -54,7 +55,7 @@ impl ServerCmd for MySql {
             password: None,
             password_required: self.password,
             socket: self.socket.clone(),
-            database: self.db.as_ref().map(DbCmd::name),
+            database: self.db.to_owned(),
         })
     }
 }
@@ -76,7 +77,7 @@ mod tests {
 
     #[test]
     fn login_args() {
-        let o = mysql("-h db.local -P 3307 -u app -p db shop").unwrap();
+        let o = mysql("-h db.local -P 3307 -u app -p shop").unwrap();
         assert_eq!(o.host, "db.local");
         assert_eq!(o.port, 3307);
         assert_eq!(o.user, "app");
@@ -84,7 +85,7 @@ mod tests {
         assert_eq!(o.password, None);
         assert_eq!(o.database.as_deref(), Some("shop"));
 
-        let o = mysql("--host x --user root -S /tmp/m.sock db crm").unwrap();
+        let o = mysql("--host x --user root -S /tmp/m.sock crm").unwrap();
         assert_eq!(o.database.as_deref(), Some("crm"));
         assert_eq!(o.socket.as_deref(), Some("/tmp/m.sock"));
         assert!(!o.password_required);

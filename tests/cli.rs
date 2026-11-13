@@ -118,7 +118,7 @@ fn psql_help_lists_only_psql_arguments() {
         predicate::str::contains("-h, --host")
             .and(predicate::str::contains("-p, --port"))
             .and(predicate::str::contains("-U, --username"))
-            .and(predicate::str::contains("-d, --dbname").not())
+            .and(predicate::str::contains("-d, --dbname"))
             .and(predicate::str::contains("-W, --password"))
             .and(predicate::str::contains("--sslmode"))
             .and(predicate::str::contains("--socket").not()),

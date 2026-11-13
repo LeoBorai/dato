@@ -15,35 +15,18 @@
 //! 4. Add `client/<name>/` (client, options, value mapping) and `dialect/<name>.rs`.
 //! 5. Add the connect form entry in `ui/form.rs`.
 
-pub mod mysql;
-pub mod psql;
-pub mod sqlite;
-
-use clap::{Parser, Subcommand};
-
-use crate::client::ConnectOptions;
-use crate::server::Server;
+use clap::Parser;
 
 pub use mysql::MySql;
 pub use psql::PostgreSql;
 pub use sqlite::Sqlite;
 
-/// Selects the database: `dato <server> [OPTIONS] db NAME`.
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum DbCmd {
-    /// Database to use.
-    Db {
-        /// Database name.
-        name: String,
-    },
-}
+use crate::client::ConnectOptions;
+use crate::server::Server;
 
-impl DbCmd {
-    pub fn name(&self) -> String {
-        let DbCmd::Db { name } = self;
-        name.clone()
-    }
-}
+pub mod mysql;
+pub mod psql;
+pub mod sqlite;
 
 /// A server's command-line arguments.
 pub trait ServerCmd: Parser {
@@ -97,11 +80,11 @@ mod tests {
 
     #[test]
     fn connect_args_match_subcommands() {
-        let argv = ["dato", "mysql", "-h", "h", "-u", "u", "-p", "db", "d"];
+        let argv = ["dato", "mysql", "-h", "h", "-u", "u", "-p", "d"];
         let cli = crate::cli::Args::try_parse_from(argv).unwrap();
         let from_cli = crate::cli::startup_options(&cli).unwrap().unwrap();
         let from_connect = Server::MySql
-            .parse_args(&split_words("-h h -u u -p db d").unwrap())
+            .parse_args(&split_words("-h h -u u -p d").unwrap())
             .unwrap();
         assert_eq!(from_cli, from_connect);
     }

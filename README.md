@@ -41,8 +41,8 @@ In batch mode the first failing statement stops the run with exit status 1.
 | Server | Arguments |
 |---|---|
 | `sqlite` | `[FILE]`: database file, or `:memory:` (default) |
-| `mysql` | `-h/--host` (default `localhost`), `-P/--port` (default `3306`), `-u/--user` `-p/--password` (prompt, no echo), `-S/--socket`; the database is the `db NAME` subcommand |
-| `psql` | `-h/--host` (default `localhost`, or a socket directory), `-p/--port` (default `5432`), `-U/--username` `-W/--password` (prompt, no echo), `--sslmode`, `--sslrootcert`; the database is the `db NAME` subcommand (default: the user name) |
+| `mysql` | `-h/--host` (default `localhost`), `-P/--port` (default `3306`), `-u/--user` `-p/--password` (prompt, no echo), `-S/--socket`; the database is an optional trailing `DB` argument |
+| `psql` | `-h/--host` (default `localhost`, or a socket directory), `-p/--port` (default `5432`), `-U/--username` `-W/--password` (prompt, no echo), `--sslmode`, `--sslrootcert`; the database is `-d/--dbname` (default: the user name) |
 
 Each server has its own arguments, so a letter can mean different things: `-P` is the
 MySQL port, `-p` the PostgreSQL one. Login arguments follow the `mysql` and `psql`
@@ -82,8 +82,8 @@ A successful connect replaces the current connection; a failed one keeps it.
 - `-f FORMAT` is now `-T FORMAT` / `--format FORMAT`.
 - `dato` with no target starts disconnected instead of opening an in-memory database;
   use `dato :memory:` for the old behavior.
-- URL targets are not accepted: use `dato mysql -h HOST -u USER -p db NAME` or
-  `dato psql -h HOST -U USER -W db NAME` instead of `mysql://` and `postgres://` URLs.
+- URL targets are not accepted: use `dato mysql -h HOST -u USER -p NAME` or
+  `dato psql -h HOST -U USER -W -d NAME` instead of `mysql://` and `postgres://` URLs.
 
 ## Shell commands
 
