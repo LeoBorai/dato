@@ -80,11 +80,11 @@ mod tests {
 
     #[test]
     fn connect_args_match_subcommands() {
-        let argv = ["dato", "mysql", "-h", "h", "-u", "u", "-p", "db", "d"];
+        let argv = ["dato", "mysql", "-h", "h", "-u", "u", "-p", "d"];
         let cli = crate::cli::Args::try_parse_from(argv).unwrap();
         let from_cli = crate::cli::startup_options(&cli).unwrap().unwrap();
         let from_connect = Server::MySql
-            .parse_args(&split_words("-h h -u u -p db d").unwrap())
+            .parse_args(&split_words("-h h -u u -p d").unwrap())
             .unwrap();
         assert_eq!(from_cli, from_connect);
     }

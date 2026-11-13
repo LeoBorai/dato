@@ -1,4 +1,4 @@
-//! `dato psql [-h HOST] [-p PORT] -U USER [-W] [--sslmode MODE] [db NAME]`.
+//! `dato psql [-h HOST] [-p PORT] -U USER [-W] [--sslmode MODE] [-d DB]`.
 //!
 //! Login arguments follow the `psql` client.
 
@@ -33,6 +33,7 @@ pub struct PostgreSql {
     #[arg(short = 'W', long)]
     pub password: bool,
 
+    /// Database name (default: the user name).
     #[arg(short = 'd', long = "dbname")]
     pub db: Option<String>,
 
@@ -84,7 +85,7 @@ mod tests {
 
     #[test]
     fn login_args() {
-        let o = psql("-h db.local -p 5433 -U app -W db shop").unwrap();
+        let o = psql("-h db.local -p 5433 -U app -W -d shop").unwrap();
         assert_eq!(o.host, "db.local");
         assert_eq!(o.port, 5433);
         assert_eq!(o.user, "app");
@@ -93,7 +94,7 @@ mod tests {
         assert_eq!(o.dbname.as_deref(), Some("shop"));
         assert_eq!(o.sslmode, SslMode::Prefer);
 
-        let o = psql("--host x --username root --sslmode verify-full --sslrootcert ca.pem db crm")
+        let o = psql("--host x --username root --sslmode verify-full --sslrootcert ca.pem -d crm")
             .unwrap();
         assert_eq!(o.dbname.as_deref(), Some("crm"));
         assert_eq!(o.sslmode, SslMode::VerifyFull);
@@ -135,7 +136,7 @@ mod tests {
             "-h, --host",
             "-p, --port",
             "-U, --username",
-            "db",
+            "-d, --dbname",
             "-W, --password",
             "--sslmode",
         ] {
