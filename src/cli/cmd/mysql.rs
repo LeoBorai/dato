@@ -1,11 +1,11 @@
-//! `dato mysql [-h HOST] [-P PORT] [-u USER] [-p] [-S SOCKET] [-D DB | DB]`.
+//! `dato mysql [-h HOST] [-P PORT] -u USER [-p] [-S SOCKET] [db NAME]`.
 //!
 //! Login arguments follow the `mysql` client.
 
 use clap::{ArgAction, Parser};
 
-use super::ServerCmd;
-use crate::client::{ConnectOptions, MySqlOptions, default_user};
+use super::{DbCmd, ServerCmd};
+use crate::client::{ConnectOptions, MySqlOptions};
 use crate::server::Server;
 
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
@@ -23,9 +23,9 @@ pub struct MySql {
     #[arg(short = 'P', long, default_value_t = 3306)]
     pub port: u16,
 
-    /// User name. Defaults to the current OS user.
-    #[arg(short = 'u', long)]
-    pub user: Option<String>,
+    /// User name.
+    #[arg(short = 'u', long, required = true)]
+    pub user: String,
 
     /// Ask for the password (input is not echoed).
     #[arg(short = 'p', long)]
@@ -35,18 +35,8 @@ pub struct MySql {
     #[arg(short = 'S', long)]
     pub socket: Option<String>,
 
-    /// Database to use.
-    #[arg(
-        short = 'D',
-        long = "database",
-        value_name = "DB",
-        conflicts_with = "db"
-    )]
-    pub database: Option<String>,
-
-    /// Database to use (same as -D).
-    #[arg(value_name = "DB")]
-    pub db: Option<String>,
+    #[command(subcommand)]
+    pub db: Option<DbCmd>,
 
     /// Print help.
     #[arg(long, action = ArgAction::Help)]
@@ -60,11 +50,11 @@ impl ServerCmd for MySql {
         ConnectOptions::MySql(MySqlOptions {
             host: self.host.clone(),
             port: self.port,
-            user: self.user.clone().unwrap_or_else(default_user),
+            user: self.user.clone(),
             password: None,
             password_required: self.password,
             socket: self.socket.clone(),
-            database: self.database.clone().or_else(|| self.db.clone()),
+            database: self.db.as_ref().map(DbCmd::name),
         })
     }
 }
@@ -86,7 +76,7 @@ mod tests {
 
     #[test]
     fn login_args() {
-        let o = mysql("-h db.local -P 3307 -u app -p shop").unwrap();
+        let o = mysql("-h db.local -P 3307 -u app -p db shop").unwrap();
         assert_eq!(o.host, "db.local");
         assert_eq!(o.port, 3307);
         assert_eq!(o.user, "app");
@@ -94,7 +84,7 @@ mod tests {
         assert_eq!(o.password, None);
         assert_eq!(o.database.as_deref(), Some("shop"));
 
-        let o = mysql("--host x --user root -D crm -S /tmp/m.sock").unwrap();
+        let o = mysql("--host x --user root -S /tmp/m.sock db crm").unwrap();
         assert_eq!(o.database.as_deref(), Some("crm"));
         assert_eq!(o.socket.as_deref(), Some("/tmp/m.sock"));
         assert!(!o.password_required);
@@ -102,9 +92,8 @@ mod tests {
 
     #[test]
     fn defaults() {
-        let o = mysql("").unwrap();
+        let o = mysql("-u app").unwrap();
         assert_eq!((o.host.as_str(), o.port), ("localhost", 3306));
-        assert_eq!(o.user, default_user());
         assert_eq!(o.database, None);
     }
 
@@ -114,12 +103,14 @@ mod tests {
         let help = mysql("--help").unwrap_err();
         assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
         assert!(help.to_string().contains("-h, --host"), "{help}");
-        assert!(mysql("-D a b").is_err());
+        assert!(mysql("-D a").is_err());
+        assert!(mysql("shop").is_err());
     }
 
     #[test]
     fn port_flag_is_only_for_mysql() {
-        assert!(mysql("-P 3307").is_ok());
-        assert!(mysql("-U app").is_err());
+        assert!(mysql("-u app -P 3307").is_ok());
+        assert!(mysql("-u app -U app").is_err());
+        assert!(mysql("").is_err());
     }
 }

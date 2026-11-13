@@ -24,8 +24,8 @@ cargo install dato
 dato app.db                                 # SQLite shell; creates app.db if missing
 dato sqlite app.db                          # same, with the explicit subcommand
 dato :memory:                               # in-memory SQLite database
-dato mysql -h db.local -u app -p shop       # MySQL shell; asks for the password
-dato psql -h db.local -U app -W shop        # PostgreSQL shell; asks for the password
+dato mysql -h db.local -u app -p db shop    # MySQL shell; asks for the password
+dato psql -h db.local -U app -W db shop     # PostgreSQL shell; asks for the password
 dato                                        # shell without a connection; use \connect
 dato app.db -e "select * from users;"       # run SQL and exit
 echo "select 1 as n;" | dato :memory:       # run SQL from stdin
@@ -41,8 +41,8 @@ In batch mode the first failing statement stops the run with exit status 1.
 | Server | Arguments |
 |---|---|
 | `sqlite` | `[FILE]`: database file, or `:memory:` (default) |
-| `mysql` | `-h/--host` (default `localhost`), `-P/--port` (default `3306`), `-u/--user` (default: OS user), `-p/--password` (prompt, no echo), `-S/--socket`, `-D/--database` or `DB` |
-| `psql` | `-h/--host` (default `localhost`, or a socket directory), `-p/--port` (default `5432`), `-U/--username` (default: OS user), `-d/--dbname` or `DB` (default: the user name), `-W/--password` (prompt, no echo), `--sslmode`, `--sslrootcert` |
+| `mysql` | `-h/--host` (default `localhost`), `-P/--port` (default `3306`), `-u/--user` `-p/--password` (prompt, no echo), `-S/--socket`; the database is the `db NAME` subcommand |
+| `psql` | `-h/--host` (default `localhost`, or a socket directory), `-p/--port` (default `5432`), `-U/--username` `-W/--password` (prompt, no echo), `--sslmode`, `--sslrootcert`; the database is the `db NAME` subcommand (default: the user name) |
 
 Each server has its own arguments, so a letter can mean different things: `-P` is the
 MySQL port, `-p` the PostgreSQL one. Login arguments follow the `mysql` and `psql`
@@ -65,7 +65,7 @@ clients. Use `dato <server> --help` for help: `-h` is the host.
 
 Compared with `psql`: only the shell commands below, not psql's full set of backslash
 meta-commands, and no `PGPASSWORD`, `.pgpass` or connection strings.
-A PostgreSQL connection is bound to one database: switch with `\connect psql -U app other`.
+A PostgreSQL connection is bound to one database: switch with `\connect psql -U app db other`.
 `.schema` rebuilds `CREATE TABLE` from the catalog (columns, defaults, constraints); it
 is not `pg_dump`.
 
@@ -73,7 +73,7 @@ is not `pg_dump`.
 
 `\connect` opens a wizard: pick a server with the arrow keys, then fill in its fields
 (the password is masked). `\connect <server> <args>` connects directly with the same
-arguments as the CLI, e.g. `\connect mysql -u root -p shop`, `\connect psql -U app -W shop`
+arguments as the CLI, e.g. `\connect mysql -u root -p db shop`, `\connect psql -U app -W db shop`
 or `\connect sqlite other.db`.
 A successful connect replaces the current connection; a failed one keeps it.
 
@@ -82,8 +82,8 @@ A successful connect replaces the current connection; a failed one keeps it.
 - `-f FORMAT` is now `-T FORMAT` / `--format FORMAT`.
 - `dato` with no target starts disconnected instead of opening an in-memory database;
   use `dato :memory:` for the old behavior.
-- URL targets are not accepted: use `dato mysql -h HOST -u USER -p DB` or
-  `dato psql -h HOST -U USER -W DB` instead of `mysql://` and `postgres://` URLs.
+- URL targets are not accepted: use `dato mysql -h HOST -u USER -p db NAME` or
+  `dato psql -h HOST -U USER -W db NAME` instead of `mysql://` and `postgres://` URLs.
 
 ## Shell commands
 

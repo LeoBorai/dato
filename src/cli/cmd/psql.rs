@@ -1,12 +1,12 @@
-//! `dato psql [-h HOST] [-p PORT] [-U USER] [-W] [--sslmode MODE] [-d DB | DB]`.
+//! `dato psql [-h HOST] [-p PORT] -U USER [-W] [--sslmode MODE] [db NAME]`.
 //!
 //! Login arguments follow the `psql` client.
 
 use clap::{ArgAction, Parser};
 
-use super::ServerCmd;
+use super::{DbCmd, ServerCmd};
 use crate::client::psql::SslMode;
-use crate::client::{ConnectOptions, PsqlOptions, default_user};
+use crate::client::{ConnectOptions, PsqlOptions};
 use crate::server::Server;
 
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
@@ -24,21 +24,17 @@ pub struct PostgreSql {
     #[arg(short = 'p', long, default_value_t = 5432)]
     pub port: u16,
 
-    /// User name. Defaults to the current OS user.
-    #[arg(short = 'U', long)]
-    pub username: Option<String>,
+    /// User name.
+    #[arg(short = 'U', long, required = true)]
+    pub username: String,
 
     /// Ask for the password (input is not echoed).
     #[arg(short = 'W', long)]
     pub password: bool,
 
-    /// Database to use. Defaults to the user name.
-    #[arg(short = 'd', long = "dbname", value_name = "DB", conflicts_with = "db")]
-    pub dbname: Option<String>,
-
-    /// Database to use (same as -d).
-    #[arg(value_name = "DB")]
-    pub db: Option<String>,
+    /// Without the `db` subcommand the database is the user name (as `psql` does).
+    #[command(subcommand)]
+    pub db: Option<DbCmd>,
 
     /// TLS mode: disable, prefer, require or verify-full.
     #[arg(long, value_name = "MODE", default_value = "prefer")]
@@ -61,10 +57,10 @@ impl ServerCmd for PostgreSql {
         ConnectOptions::Psql(PsqlOptions {
             host: self.host.clone(),
             port: self.port,
-            user: self.username.clone().unwrap_or_else(default_user),
+            user: self.username.clone(),
             password: None,
             password_required: self.password,
-            dbname: self.dbname.clone().or_else(|| self.db.clone()),
+            dbname: self.db.as_ref().map(DbCmd::name),
             sslmode: self.sslmode,
             sslrootcert: self.sslrootcert.clone(),
         })
@@ -88,7 +84,7 @@ mod tests {
 
     #[test]
     fn login_args() {
-        let o = psql("-h db.local -p 5433 -U app -W shop").unwrap();
+        let o = psql("-h db.local -p 5433 -U app -W db shop").unwrap();
         assert_eq!(o.host, "db.local");
         assert_eq!(o.port, 5433);
         assert_eq!(o.user, "app");
@@ -97,7 +93,7 @@ mod tests {
         assert_eq!(o.dbname.as_deref(), Some("shop"));
         assert_eq!(o.sslmode, SslMode::Prefer);
 
-        let o = psql("--host x --username root -d crm --sslmode verify-full --sslrootcert ca.pem")
+        let o = psql("--host x --username root --sslmode verify-full --sslrootcert ca.pem db crm")
             .unwrap();
         assert_eq!(o.dbname.as_deref(), Some("crm"));
         assert_eq!(o.sslmode, SslMode::VerifyFull);
@@ -107,23 +103,23 @@ mod tests {
 
     #[test]
     fn defaults() {
-        let o = psql("").unwrap();
+        let o = psql("-U app").unwrap();
         assert_eq!((o.host.as_str(), o.port), ("localhost", 5432));
-        assert_eq!(o.user, default_user());
         assert_eq!(o.dbname, None);
     }
 
     #[test]
     fn rejects_other_servers_flags_and_attached_password() {
-        assert!(psql("-P 5433").is_err());
-        assert!(psql("-S /tmp/s.sock").is_err());
+        assert!(psql("-U app -P 5433").is_err());
+        assert!(psql("-U app -S /tmp/s.sock").is_err());
         assert!(psql("-U postgres -Wsecret").is_err());
-        assert!(psql("-d a b").is_err());
+        assert!(psql("-d a").is_err());
+        assert!(psql("shop").is_err());
     }
 
     #[test]
     fn invalid_sslmode_lists_valid_modes() {
-        let err = psql("--sslmode bogus").unwrap_err().to_string();
+        let err = psql("-U app --sslmode bogus").unwrap_err().to_string();
         assert!(
             err.contains("disable, prefer, require, verify-full"),
             "{err}"
@@ -139,7 +135,7 @@ mod tests {
             "-h, --host",
             "-p, --port",
             "-U, --username",
-            "-d, --dbname",
+            "db",
             "-W, --password",
             "--sslmode",
         ] {

@@ -292,18 +292,18 @@ mod tests {
             vec![Output::Connect(ConnectOptions::sqlite(Some("x.db")))]
         );
         assert!(matches!(
-            &s.handle("\\connect mysql -h db.local -u app -p shop")[0],
+            &s.handle("\\connect mysql -h db.local -u app -p db shop")[0],
             Output::Connect(ConnectOptions::MySql(o))
                 if o.host == "db.local" && o.password_required
         ));
         assert!(matches!(
-            &s.handle("\\connect psql -h db.local -U app -W shop")[0],
+            &s.handle("\\connect psql -h db.local -U app -W db shop")[0],
             Output::Connect(ConnectOptions::Psql(o))
                 if o.host == "db.local" && o.user == "app" && o.password_required
                     && o.dbname.as_deref() == Some("shop")
         ));
         assert!(matches!(
-            &s.handle("\\connect PSQL")[0],
+            &s.handle("\\connect PSQL -U app")[0],
             Output::Connect(ConnectOptions::Psql(_))
         ));
         // Another server's flag is rejected.
