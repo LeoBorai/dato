@@ -71,6 +71,27 @@ pub fn build(schema: Arc<RwLock<SchemaCache>>, dialect: Arc<RwLock<Server>>) -> 
             ReedlineEvent::Menu(MENU.to_string()),
         ]),
     );
+    // Moving the cursor closes the menu by default. Reopen it so it follows
+    // the cursor, like typing does.
+    keys.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Left,
+        ReedlineEvent::Multiple(vec![
+            ReedlineEvent::Left,
+            ReedlineEvent::Menu(MENU.to_string()),
+        ]),
+    );
+    keys.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Right,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::HistoryHintComplete,
+            ReedlineEvent::Multiple(vec![
+                ReedlineEvent::Right,
+                ReedlineEvent::Menu(MENU.to_string()),
+            ]),
+        ]),
+    );
 
     let mut editor = Reedline::create()
         .with_completer(Box::new(SqlCompleter::new(schema)))
