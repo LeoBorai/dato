@@ -46,6 +46,19 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     }
 }
 
+/// Shows a path under the home directory as `~/...`; the inverse of
+/// [`expand_tilde`]. Other paths are returned unchanged.
+pub fn collapse_home(path: &str) -> String {
+    let Some(home) = dirs::home_dir() else {
+        return path.to_string();
+    };
+    match std::path::Path::new(path).strip_prefix(&home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.to_string(),
+    }
+}
+
 /// Creates `dir` if missing. On Unix it is private to the user (`0700`): history
 /// and edit buffers can hold queries with sensitive data.
 pub fn ensure_dir(dir: &Path) -> io::Result<()> {
@@ -104,6 +117,21 @@ mod tests {
         assert_eq!(expand_tilde("~other/x"), Path::new("~other/x"));
         assert_eq!(expand_tilde("a/~/b"), Path::new("a/~/b"));
         assert_eq!(expand_tilde("/abs"), Path::new("/abs"));
+    }
+
+    #[test]
+    fn home_collapses_to_tilde() {
+        let Some(home) = dirs::home_dir() else { return };
+        let h = home.display();
+        assert_eq!(collapse_home(&format!("{h}/a/b.db")), "~/a/b.db");
+        assert_eq!(collapse_home(&h.to_string()), "~");
+        assert_eq!(collapse_home(&format!("{h}x/a.db")), format!("{h}x/a.db"));
+        assert_eq!(collapse_home("/etc/a.db"), "/etc/a.db");
+        assert_eq!(collapse_home("rel.db"), "rel.db");
+        assert_eq!(
+            expand_tilde(&collapse_home(&format!("{h}/a.db"))),
+            home.join("a.db")
+        );
     }
 
     #[test]
