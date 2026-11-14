@@ -13,5 +13,6 @@ pub mod render;
 pub mod server;
 pub mod special;
 pub mod sql;
+pub mod store;
 pub mod tui;
 pub mod ui;

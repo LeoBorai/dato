@@ -43,6 +43,19 @@ impl TextInput {
         self.chars.iter().collect()
     }
 
+    /// The characters before the cursor.
+    pub fn before_cursor(&self) -> &[char] {
+        &self.chars[..self.cursor]
+    }
+
+    /// Replaces the characters in `range` with `with`, leaving the cursor
+    /// after the new text.
+    pub fn replace(&mut self, range: std::ops::Range<usize>, with: &str) {
+        let new: Vec<char> = with.chars().collect();
+        self.cursor = range.start + new.len();
+        self.chars.splice(range, new);
+    }
+
     fn shown(&self) -> Vec<char> {
         match self.mask {
             Some(m) => vec![m; self.chars.len()],

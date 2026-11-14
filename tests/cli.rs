@@ -13,7 +13,7 @@ fn one_shot_select_prints_table() {
         .args([":memory:", "-T", "ascii", "-e", "select 1 as n;"])
         .assert()
         .success()
-        .stdout("+---+\n| n |\n+---+\n| 1 |\n+---+\n");
+        .stdout("┌───┐\n│ n │\n├───┤\n│ 1 │\n└───┘\n");
 }
 
 #[test]

@@ -368,6 +368,10 @@ impl Client for MySqlClient {
         })
     }
 
+    fn database(&self) -> Option<String> {
+        self.database.clone()
+    }
+
     fn prompt_label(&self) -> String {
         match &self.database {
             Some(db) => format!("{}@{}/{db}", self.user, self.host),

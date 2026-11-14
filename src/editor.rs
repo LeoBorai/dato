@@ -25,6 +25,9 @@ use menu::QuietMenu;
 
 const MENU: &str = "completion_menu";
 
+/// Replaces the prompt indicator while suggestions are showing.
+pub const MENU_INDICATOR: &str = "▷ ";
+
 /// Builds the line editor. Ctrl-O opens `$VISUAL`/`$EDITOR`; Alt-Enter submits
 /// even when the statement looks unfinished.
 /// Completion follows `schema` (which names its server); highlighting and
@@ -98,6 +101,7 @@ pub fn build(schema: Arc<RwLock<SchemaCache>>, dialect: Arc<RwLock<Server>>) -> 
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(QuietMenu::new(
             IdeMenu::default()
                 .with_name(MENU)
+                .with_marker(MENU_INDICATOR)
                 .with_default_border()
                 .with_word_chars("_$"),
         ))))

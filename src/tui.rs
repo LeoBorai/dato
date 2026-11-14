@@ -2,9 +2,10 @@
 
 pub mod interrupt;
 pub mod session;
+pub mod welcome;
 
 use std::borrow::Cow;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
 use reedline::{
@@ -16,26 +17,80 @@ use crate::cli::cmd::ask_password;
 use crate::client::ConnectOptions;
 use crate::editor::{self, external};
 use crate::paths;
-use crate::ui::organisms::{ConnectWizard, Pager, too_wide};
-use crate::ui::term;
-use session::{Output, Session};
+use crate::store::default_name;
+use crate::ui::organisms::{ConnectWizard, NewConnection, Pager, too_wide};
+use crate::ui::{server_color, server_title, term};
+use nu_ansi_term::{Color, Style};
+use session::{Output, PromptInfo, Session};
+use std::time::Duration;
+
+/// Marks the end of the connection name; takes the server's color.
+const DIVIDER: &str = "✱";
+/// Ends the prompt; `...` marks the continuation lines of a statement.
+const INDICATOR: &str = "▶︎ ";
+const MULTILINE_INDICATOR: &str = "↩︎ ";
 
 struct SqlPrompt {
-    name: String,
+    info: PromptInfo,
+}
+
+/// Shortest command time worth showing.
+const SLOW: Duration = Duration::from_secs(2);
+
+/// `2s`, `1m 5s`, `1h 2m`.
+fn format_took(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m {}s", s / 60, s % 60),
+        _ => format!("{}h {}m", s / 3600, s % 3600 / 60),
+    }
+}
+
+impl SqlPrompt {
+    /// The prompt's own line, like `shopify ✱ app@localhost:5432 on shop via ● PostgreSQL took 2s`.
+    /// The ✱ and ● take the server's color. The input goes on the next line,
+    /// after the indicator.
+    fn left(&self) -> String {
+        let i = &self.info;
+        let dim = dim();
+        let accent = i.server.map(|s| Style::new().bold().fg(server_color(s)));
+        let mut out = Style::new().bold().paint(&i.name).to_string();
+        if let Some(detail) = &i.detail {
+            let divider = accent.map_or(DIVIDER.to_string(), |a| a.paint(DIVIDER).to_string());
+            out += &format!(" {divider} {detail}");
+        }
+        if let Some(db) = &i.database {
+            out += &format!(" {} {db}", dim.paint("on"));
+        }
+        if let Some(server) = i.server {
+            let dot = Style::new().fg(server_color(server)).paint("●");
+            out += &format!(" {} {dot} {}", dim.paint("via"), server_title(server));
+        }
+        if let Some(took) = i.took.filter(|t| *t >= SLOW) {
+            out += &format!(" {} {}", dim.paint("took"), format_took(took));
+        }
+        out.push('\n');
+        out
+    }
 }
 
 impl Prompt for SqlPrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
-        Cow::Owned(self.name.clone())
+        Cow::Owned(self.left())
+    }
+    /// The left side carries its own colors.
+    fn get_prompt_color(&self) -> reedline::Color {
+        reedline::Color::Default
     }
     fn render_prompt_right(&self) -> Cow<'_, str> {
         Cow::Borrowed("")
     }
     fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<'_, str> {
-        Cow::Borrowed("> ")
+        Cow::Borrowed(INDICATOR)
     }
     fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
-        Cow::Borrowed("... ")
+        Cow::Borrowed(MULTILINE_INDICATOR)
     }
     fn render_prompt_history_search_indicator(
         &self,
@@ -60,9 +115,51 @@ pub fn history_path() -> Option<PathBuf> {
     paths::history_file()
 }
 
+/// Whether to color messages on stderr: it is a terminal and `NO_COLOR` is not set.
+pub fn use_color() -> bool {
+    std::io::stderr().is_terminal() && no_color_unset()
+}
+
+fn no_color_unset() -> bool {
+    std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+}
+
+/// Which of the output streams get colors.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Colors {
+    pub stdout: bool,
+    pub stderr: bool,
+}
+
+impl Colors {
+    /// Colors for each stream that is a terminal, unless `NO_COLOR` is set.
+    pub fn detect() -> Self {
+        Self {
+            stdout: std::io::stdout().is_terminal() && no_color_unset(),
+            stderr: use_color(),
+        }
+    }
+}
+
+/// The soft gray of secondary text: the `via` in the prompt and the row
+/// count after a result.
+pub fn dim() -> Style {
+    Style::new().fg(Color::DarkGray)
+}
+
+/// `⚠ Error: message`, in red when `color`.
+pub fn error_line(message: impl std::fmt::Display, color: bool) -> String {
+    let text = format!("⚠ Error: {message}");
+    if color {
+        nu_ansi_term::Color::Red.paint(text).to_string()
+    } else {
+        text
+    }
+}
+
 /// Prints outputs: text and status to stdout, errors to stderr.
 /// Returns `true` when a quit was requested.
-pub fn emit(outputs: &[Output], out: &mut dyn Write, err: &mut dyn Write) -> bool {
+pub fn emit(outputs: &[Output], out: &mut dyn Write, err: &mut dyn Write, colors: Colors) -> bool {
     let mut quit = false;
     for o in outputs {
         match o {
@@ -73,15 +170,19 @@ pub fn emit(outputs: &[Output], out: &mut dyn Write, err: &mut dyn Write) -> boo
                 }
             }
             Output::Status(s) => {
-                let _ = writeln!(out, "{s}");
+                if colors.stdout {
+                    let _ = writeln!(out, "{}", dim().paint(s));
+                } else {
+                    let _ = writeln!(out, "{s}");
+                }
             }
             Output::Error(e) => {
-                let _ = writeln!(err, "Error: {e}");
+                let _ = writeln!(err, "{}", error_line(e, colors.stderr));
             }
             Output::Quit => quit = true,
             // Connecting needs a terminal; the shell handles these before emitting.
             Output::ConnectWizard | Output::Connect(_) => {
-                let _ = writeln!(err, "Error: {NOT_INTERACTIVE}");
+                let _ = writeln!(err, "{}", error_line(NOT_INTERACTIVE, colors.stderr));
             }
         }
     }
@@ -107,45 +208,89 @@ fn page(text: &str) -> bool {
     term::run(&mut Pager::new(text, columns as usize, rows as usize)).is_ok()
 }
 
-/// Handles `\\connect`: runs the wizard when `opts` is `None`, asks for the
-/// password when the options need one, then replaces the session's connection.
-/// A cancelled wizard or a failed connect keeps the current connection.
-fn connect(
+/// Asks for the password when the options need one, connects and reports the
+/// outcome. A failed connect keeps the current connection. Returns whether it
+/// connected.
+fn establish(
     session: &mut Session,
-    opts: Option<ConnectOptions>,
+    opts: &mut ConnectOptions,
+    name: Option<String>,
     out: &mut dyn Write,
     err: &mut dyn Write,
-) {
-    let opts = match opts {
-        Some(o) => Some(o),
-        None => match term::run(&mut ConnectWizard::new()) {
-            Ok(o) => o,
-            Err(e) => {
-                let _ = writeln!(err, "Error: cannot run the connect wizard: {e}");
-                return;
-            }
-        },
-    };
-    let Some(mut opts) = opts else {
-        let _ = writeln!(out, "Connect cancelled.");
-        return;
-    };
-    if let Err(e) = ask_password(&mut opts) {
-        let _ = writeln!(err, "Error: cannot read password: {e}");
-        return;
+) -> bool {
+    if let Err(e) = ask_password(opts) {
+        let _ = writeln!(
+            err,
+            "{}",
+            error_line(format!("cannot read password: {e}"), use_color())
+        );
+        return false;
     }
-    match session.connect(&opts) {
+    match session.connect(opts) {
         Ok(()) => {
+            if let Some(name) = name {
+                session.set_connection_name(name);
+            }
             let _ = writeln!(
                 out,
                 "Connected to {} ({}).",
                 session.prompt_label(),
                 opts.server()
             );
+            true
         }
         Err(e) => {
-            let _ = writeln!(err, "Error: {e}");
+            let _ = writeln!(err, "{}", error_line(e, use_color()));
+            false
         }
+    }
+}
+
+/// Saves a connection made with the wizard under its name (or a default one).
+fn remember(new: &NewConnection, opts: &ConnectOptions, err: &mut dyn Write) {
+    let mut store = welcome::open_store(err);
+    let name = new.name.clone().unwrap_or_else(|| default_name(opts));
+    store.remember(&name, opts, new.save_password, welcome::now());
+    if let Err(e) = store.save() {
+        let _ = writeln!(err, "warning: cannot save the connection: {e}");
+    }
+}
+
+/// Handles `\\connect`: runs the wizard when `opts` is `None`, asks for the
+/// password when the options need one, then replaces the session's connection.
+/// A cancelled wizard or a failed connect keeps the current connection. A
+/// connection made with the wizard is saved for the welcome screen.
+fn connect(
+    session: &mut Session,
+    opts: Option<ConnectOptions>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) {
+    let (mut opts, wizard) = match opts {
+        Some(o) => (o, None),
+        None => match term::run(&mut ConnectWizard::new()) {
+            Ok(Some(new)) => (new.opts.clone(), Some(new)),
+            Ok(None) => {
+                let _ = writeln!(out, "Connect cancelled.");
+                return;
+            }
+            Err(e) => {
+                let _ = writeln!(
+                    err,
+                    "{}",
+                    error_line(format!("cannot run the connect wizard: {e}"), use_color())
+                );
+                return;
+            }
+        },
+    };
+    let name = wizard
+        .as_ref()
+        .map(|n| n.name.clone().unwrap_or_else(|| default_name(&n.opts)));
+    if establish(session, &mut opts, name, out, err)
+        && let Some(new) = wizard
+    {
+        remember(&new, &opts, err);
     }
 }
 
@@ -170,7 +315,7 @@ pub fn run(mut session: Session) -> i32 {
     loop {
         // Rebuilt each time: `\\connect` and MySQL `USE` change the label.
         let prompt = SqlPrompt {
-            name: session.prompt_label(),
+            info: session.prompt_info(),
         };
         match line_editor.read_line(&prompt) {
             Ok(Signal::Success(buffer)) => {
@@ -179,7 +324,10 @@ pub fn run(mut session: Session) -> i32 {
                         Ok(text) => {
                             line_editor.run_edit_commands(&[EditCommand::InsertString(text)]);
                         }
-                        Err(e) => eprintln!("Error: cannot run editor: {e}"),
+                        Err(e) => eprintln!(
+                            "{}",
+                            error_line(format!("cannot run editor: {e}"), use_color())
+                        ),
                     }
                     continue;
                 }
@@ -194,7 +342,7 @@ pub fn run(mut session: Session) -> i32 {
                             false
                         }
                         Output::Text(text) if page(&text) => false,
-                        other => emit(&[other], &mut stdout, &mut stderr),
+                        other => emit(&[other], &mut stdout, &mut stderr, Colors::detect()),
                     };
                     if quit {
                         return 0;
@@ -205,7 +353,7 @@ pub fn run(mut session: Session) -> i32 {
             Ok(Signal::CtrlD) => return 0,
             Ok(_) => {}
             Err(e) => {
-                eprintln!("Error: {e}");
+                eprintln!("{}", error_line(e, use_color()));
                 return 1;
             }
         }
@@ -215,6 +363,7 @@ pub fn run(mut session: Session) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::Server;
 
     #[test]
     fn emit_routes_streams_and_detects_quit() {
@@ -228,10 +377,104 @@ mod tests {
             ],
             &mut out,
             &mut err,
+            Colors::default(),
         );
         assert!(quit);
         assert_eq!(String::from_utf8(out).unwrap(), "a\n1 row in set\n");
-        assert_eq!(String::from_utf8(err).unwrap(), "Error: boom\n");
+        assert_eq!(String::from_utf8(err).unwrap(), "⚠ Error: boom\n");
+    }
+
+    #[test]
+    fn errors_are_red_only_with_color() {
+        assert_eq!(error_line("boom", false), "⚠ Error: boom");
+        let red = error_line("boom", true);
+        assert!(
+            red.starts_with("\x1b[31m") && red.contains("⚠ Error: boom"),
+            "{red:?}"
+        );
+        let mut err = Vec::new();
+        emit(
+            &[Output::Error("boom".into())],
+            &mut Vec::new(),
+            &mut err,
+            Colors {
+                stdout: false,
+                stderr: true,
+            },
+        );
+        assert_eq!(String::from_utf8(err).unwrap(), format!("{red}\n"));
+    }
+
+    #[test]
+    fn status_line_is_soft_gray_only_with_color() {
+        let status = [Output::Status("17 rows in set, 0.002s".into())];
+        let mut out = Vec::new();
+        emit(&status, &mut out, &mut Vec::new(), Colors::default());
+        assert_eq!(String::from_utf8(out).unwrap(), "17 rows in set, 0.002s\n");
+        let mut out = Vec::new();
+        let colors = Colors {
+            stdout: true,
+            stderr: false,
+        };
+        emit(&status, &mut out, &mut Vec::new(), colors);
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text, format!("{}\n", dim().paint("17 rows in set, 0.002s")));
+        assert!(text.starts_with("\x1b["), "{text:?}");
+    }
+
+    fn plain(s: &str) -> String {
+        let mut out = String::new();
+        let mut esc = false;
+        for c in s.chars() {
+            match (esc, c) {
+                (_, '\x1b') => esc = true,
+                (true, 'm') => esc = false,
+                (false, c) => out.push(c),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn info() -> PromptInfo {
+        PromptInfo {
+            name: "shopify".into(),
+            detail: Some("app@localhost:5432".into()),
+            database: Some("shop".into()),
+            server: Some(Server::PostgreSql),
+            took: Some(Duration::from_millis(2400)),
+        }
+    }
+
+    #[test]
+    fn prompt_line_has_name_details_database_server_and_time() {
+        let left = SqlPrompt { info: info() }.left();
+        assert!(left.contains("\x1b["), "{left:?}");
+        assert_eq!(
+            plain(&left),
+            "shopify ✱ app@localhost:5432 on shop via ● PostgreSQL took 2s\n"
+        );
+    }
+
+    #[test]
+    fn quick_commands_and_missing_parts_are_left_out() {
+        let quick = PromptInfo {
+            took: Some(Duration::from_millis(1900)),
+            database: None,
+            ..info()
+        };
+        assert_eq!(
+            plain(&SqlPrompt { info: quick }.left()),
+            "shopify ✱ app@localhost:5432 via ● PostgreSQL\n"
+        );
+        let none = PromptInfo {
+            name: "(none)".into(),
+            ..Default::default()
+        };
+        assert_eq!(plain(&SqlPrompt { info: none }.left()), "(none)\n");
+        assert_eq!(format_took(Duration::from_secs(65)), "1m 5s");
+        assert_eq!(format_took(Duration::from_secs(3700)), "1h 1m");
+        assert_eq!(INDICATOR, "▶\u{fe0e} ");
     }
 
     #[test]

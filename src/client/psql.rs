@@ -564,6 +564,10 @@ impl Client for PsqlClient {
         })
     }
 
+    fn database(&self) -> Option<String> {
+        Some(self.database.clone())
+    }
+
     fn prompt_label(&self) -> String {
         format!("{}@{}/{}", self.user, self.host, self.database)
     }

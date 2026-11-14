@@ -3,7 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use nu_ansi_term::{Color, Style};
 
-use crate::ui::atoms::{PasswordInput, TextInput};
+use crate::ui::atoms::{PasswordInput, PathInput, TextInput};
 use crate::ui::{Line, Step, Widget, is_cancel};
 
 /// One of a few fixed values, picked with the arrow keys.
@@ -66,6 +66,7 @@ impl Choice {
 pub enum FieldInput {
     Text(TextInput),
     Password(PasswordInput),
+    Path(PathInput),
     Choice(Choice),
 }
 
@@ -89,6 +90,7 @@ impl LabeledField {
         match &self.input {
             FieldInput::Text(t) => t.value(),
             FieldInput::Password(p) => p.value(),
+            FieldInput::Path(p) => p.value(),
             FieldInput::Choice(ch) => ch.value(),
         }
     }
@@ -107,6 +109,7 @@ impl LabeledField {
         line.extend(match &self.input {
             FieldInput::Text(t) => t.render_value(),
             FieldInput::Password(p) => p.render_value(),
+            FieldInput::Path(p) => p.render_value(),
             FieldInput::Choice(ch) => ch.render_value(true),
         });
         line
@@ -121,6 +124,7 @@ impl Widget for LabeledField {
         match &mut self.input {
             FieldInput::Text(t) => t.on_key(key),
             FieldInput::Password(p) => p.on_key(key),
+            FieldInput::Path(p) => p.on_key(key),
             FieldInput::Choice(ch) => ch.on_key(key),
         }
     }
@@ -130,12 +134,16 @@ impl Widget for LabeledField {
         let input = match &self.input {
             FieldInput::Text(t) => t.render(),
             FieldInput::Password(p) => p.render(),
+            FieldInput::Path(p) => p.render(),
             FieldInput::Choice(ch) => vec![ch.render_value(false)],
         };
-        if let Some(first) = input.into_iter().next() {
+        let mut input = input.into_iter();
+        if let Some(first) = input.next() {
             line.extend(first);
         }
         let mut out = vec![line];
+        // Menu lines of a path field.
+        out.extend(input);
         if let Some(e) = &self.error {
             out.push(Line::styled(Style::new().fg(Color::Red), format!("  {e}")));
         }
