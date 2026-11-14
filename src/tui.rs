@@ -2,6 +2,7 @@
 
 pub mod interrupt;
 pub mod session;
+pub mod welcome;
 
 use std::borrow::Cow;
 use std::io::Write;
@@ -16,7 +17,8 @@ use crate::cli::cmd::ask_password;
 use crate::client::ConnectOptions;
 use crate::editor::{self, external};
 use crate::paths;
-use crate::ui::organisms::{ConnectWizard, Pager, too_wide};
+use crate::store::default_name;
+use crate::ui::organisms::{ConnectWizard, NewConnection, Pager, too_wide};
 use crate::ui::term;
 use session::{Output, Session};
 
@@ -107,34 +109,20 @@ fn page(text: &str) -> bool {
     term::run(&mut Pager::new(text, columns as usize, rows as usize)).is_ok()
 }
 
-/// Handles `\\connect`: runs the wizard when `opts` is `None`, asks for the
-/// password when the options need one, then replaces the session's connection.
-/// A cancelled wizard or a failed connect keeps the current connection.
-fn connect(
+/// Asks for the password when the options need one, connects and reports the
+/// outcome. A failed connect keeps the current connection. Returns whether it
+/// connected.
+fn establish(
     session: &mut Session,
-    opts: Option<ConnectOptions>,
+    opts: &mut ConnectOptions,
     out: &mut dyn Write,
     err: &mut dyn Write,
-) {
-    let opts = match opts {
-        Some(o) => Some(o),
-        None => match term::run(&mut ConnectWizard::new()) {
-            Ok(o) => o,
-            Err(e) => {
-                let _ = writeln!(err, "Error: cannot run the connect wizard: {e}");
-                return;
-            }
-        },
-    };
-    let Some(mut opts) = opts else {
-        let _ = writeln!(out, "Connect cancelled.");
-        return;
-    };
-    if let Err(e) = ask_password(&mut opts) {
+) -> bool {
+    if let Err(e) = ask_password(opts) {
         let _ = writeln!(err, "Error: cannot read password: {e}");
-        return;
+        return false;
     }
-    match session.connect(&opts) {
+    match session.connect(opts) {
         Ok(()) => {
             let _ = writeln!(
                 out,
@@ -142,10 +130,53 @@ fn connect(
                 session.prompt_label(),
                 opts.server()
             );
+            true
         }
         Err(e) => {
             let _ = writeln!(err, "Error: {e}");
+            false
         }
+    }
+}
+
+/// Saves a connection made with the wizard under its name (or a default one).
+fn remember(new: &NewConnection, opts: &ConnectOptions, err: &mut dyn Write) {
+    let mut store = welcome::open_store(err);
+    let name = new.name.clone().unwrap_or_else(|| default_name(opts));
+    store.remember(&name, opts, new.save_password, welcome::now());
+    if let Err(e) = store.save() {
+        let _ = writeln!(err, "warning: cannot save the connection: {e}");
+    }
+}
+
+/// Handles `\\connect`: runs the wizard when `opts` is `None`, asks for the
+/// password when the options need one, then replaces the session's connection.
+/// A cancelled wizard or a failed connect keeps the current connection. A
+/// connection made with the wizard is saved for the welcome screen.
+fn connect(
+    session: &mut Session,
+    opts: Option<ConnectOptions>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) {
+    let (mut opts, wizard) = match opts {
+        Some(o) => (o, None),
+        None => match term::run(&mut ConnectWizard::new()) {
+            Ok(Some(new)) => (new.opts.clone(), Some(new)),
+            Ok(None) => {
+                let _ = writeln!(out, "Connect cancelled.");
+                return;
+            }
+            Err(e) => {
+                let _ = writeln!(err, "Error: cannot run the connect wizard: {e}");
+                return;
+            }
+        },
+    };
+    if establish(session, &mut opts, out, err)
+        && let Some(new) = wizard
+    {
+        remember(&new, &opts, err);
     }
 }
 

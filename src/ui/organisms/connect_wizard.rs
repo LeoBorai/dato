@@ -5,9 +5,19 @@ use nu_ansi_term::{Color, Style};
 
 use crate::client::ConnectOptions;
 use crate::server::Server;
-use crate::ui::atoms::{PasswordInput, SelectList, TextInput};
+use crate::ui::atoms::{PasswordInput, PathInput, SelectList, TextInput};
 use crate::ui::molecules::{Choice, FieldInput, LabeledField};
-use crate::ui::{ConnectForm, Field, FieldValues, Line, Step, Widget};
+use crate::ui::{ConnectForm, Field, FieldValues, Line, Step, Widget, server_color, server_title};
+
+/// What the wizard collected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewConnection {
+    pub opts: ConnectOptions,
+    /// Name to save the connection as; `None` when left empty.
+    pub name: Option<String>,
+    /// Keep the password with the saved connection.
+    pub save_password: bool,
+}
 
 enum Stage {
     Server(SelectList<Server>),
@@ -21,7 +31,14 @@ enum Stage {
 
 pub struct ConnectWizard {
     stage: Stage,
+    /// Terminal `(columns, rows)`; when set, the wizard is drawn in its middle.
+    size: Option<(usize, usize)>,
 }
+
+/// Columns and rows the wizard is laid out in when centered. Fixed, so the
+/// form does not move as fields are filled in or menus open.
+const CENTER_WIDTH: usize = 64;
+const CENTER_HEIGHT: usize = 14;
 
 impl Default for ConnectWizard {
     fn default() -> Self {
@@ -32,6 +49,8 @@ impl Default for ConnectWizard {
 fn field(spec: &Field) -> LabeledField {
     let input = if !spec.choices.is_empty() {
         FieldInput::Choice(Choice::new(spec.choices, &spec.default))
+    } else if spec.path {
+        FieldInput::Path(PathInput::new(&spec.default).with_placeholder(spec.placeholder))
     } else if spec.secret {
         FieldInput::Password(PasswordInput::new())
     } else {
@@ -44,11 +63,31 @@ impl ConnectWizard {
     pub fn new() -> Self {
         Self {
             stage: Stage::Server(SelectList::new(Server::ALL.iter().copied())),
+            size: None,
         }
     }
 
+    /// Draws the wizard in the middle of a terminal of `columns` x `rows`.
+    pub fn centered(mut self, columns: usize, rows: usize) -> Self {
+        self.size = Some((columns, rows));
+        self
+    }
+
     fn start_fields(&mut self, server: Server) {
-        let specs = server.fields();
+        let mut specs = server.fields();
+        let has_password = specs.iter().any(|s| s.secret);
+        specs.push(Field {
+            placeholder: "auto",
+            ..Field::text("name", "Connection name", "")
+        });
+        if has_password {
+            specs.push(Field::choice(
+                "save_password",
+                "Save password",
+                &["no", "yes"],
+                "no",
+            ));
+        }
         let fields = specs.iter().map(field).collect();
         self.stage = Stage::Fields {
             server,
@@ -60,9 +99,9 @@ impl ConnectWizard {
 }
 
 impl Widget for ConnectWizard {
-    type Output = ConnectOptions;
+    type Output = NewConnection;
 
-    fn on_key(&mut self, key: KeyEvent) -> Step<ConnectOptions> {
+    fn on_key(&mut self, key: KeyEvent) -> Step<NewConnection> {
         match &mut self.stage {
             Stage::Server(list) => match list.on_key(key) {
                 Step::Done(server) => {
@@ -93,7 +132,12 @@ impl Widget for ConnectWizard {
                             .collect(),
                     );
                     match server.build(&values) {
-                        Ok(opts) => Step::Done(opts),
+                        Ok(opts) => Step::Done(NewConnection {
+                            opts,
+                            name: Some(values.get("name").trim().to_string())
+                                .filter(|n| !n.is_empty()),
+                            save_password: values.get("save_password") == "yes",
+                        }),
                         Err(e) => {
                             // Go back to the offending field and show the error.
                             if let Some(i) = specs.iter().position(|s| s.key == e.key) {
@@ -109,15 +153,42 @@ impl Widget for ConnectWizard {
     }
 
     fn render(&self) -> Vec<Line> {
+        let lines = self.render_stage();
+        let Some((columns, rows)) = self.size else {
+            return lines;
+        };
+        let pad = " ".repeat(columns.saturating_sub(CENTER_WIDTH) / 2);
+        let mut out = vec![Line::default(); rows.saturating_sub(CENTER_HEIGHT) / 2];
+        out.extend(lines.into_iter().map(|mut l| {
+            l.0.insert(0, (Style::new(), pad.clone()));
+            l
+        }));
+        out
+    }
+}
+
+impl ConnectWizard {
+    fn render_stage(&self) -> Vec<Line> {
         let title = Style::new().bold();
         let hint = Style::new().fg(Color::DarkGray);
         match &self.stage {
             Stage::Server(list) => {
                 let mut out = vec![
-                    Line::styled(title, "Connect to a database server"),
+                    Line::styled(title, "Choose a database provider"),
                     Line::styled(hint, "  Up/Down to choose, Enter to select, Esc to cancel"),
                 ];
-                out.extend(list.render());
+                for (i, server) in list.items().iter().enumerate() {
+                    let on = i == list.selected_index();
+                    let text = if on {
+                        Style::new().bold().fg(Color::Cyan)
+                    } else {
+                        Style::new()
+                    };
+                    let mut line = Line::styled(text, if on { "> " } else { "  " });
+                    line.push(Style::new().fg(server_color(*server)), "●");
+                    line.push(text, format!(" {} ({server})", server_title(*server)));
+                    out.push(line);
+                }
                 out
             }
             Stage::Fields {
@@ -163,7 +234,9 @@ mod tests {
         let w = ConnectWizard::new();
         let s = screen(&w);
         assert!(
-            s.contains("> sqlite") && s.contains("  mysql") && s.contains("  psql"),
+            s.contains("> ● SQLite (sqlite)")
+                && s.contains("  ● MySQL (mysql)")
+                && s.contains("  ● PostgreSQL (psql)"),
             "{s}"
         );
     }
@@ -171,13 +244,18 @@ mod tests {
     #[test]
     fn sqlite_through_the_wizard() {
         let mut w = ConnectWizard::new();
+        // provider, file, then the connection name left empty.
         let keys = [enter()]
             .into_iter()
             .chain(typed("app.db"))
-            .chain([enter()]);
+            .chain([enter(), enter()]);
         assert_eq!(
             feed(&mut w, keys),
-            Step::Done(ConnectOptions::sqlite(Some("app.db")))
+            Step::Done(NewConnection {
+                opts: ConnectOptions::sqlite(Some("app.db")),
+                name: None,
+                save_password: false,
+            })
         );
     }
 
@@ -201,19 +279,27 @@ mod tests {
             "{s}"
         );
         feed(&mut w, [enter()]);
-        let done = feed(&mut w, typed("shop").into_iter().chain([enter()]));
+        feed(&mut w, typed("shop").into_iter().chain([enter()]));
+        // Connection name, then "Save password" (no by default).
+        feed(&mut w, typed("shopify").into_iter().chain([enter()]));
+        assert!(screen(&w).contains("Save password: (*) no  ( ) yes"));
+        let done = feed(&mut w, [key(KeyCode::Right), enter()]);
         assert!(!screen(&w).contains("secret"));
         assert_eq!(
             done,
-            Step::Done(ConnectOptions::MySql(MySqlOptions {
-                host: "localhost".into(),
-                port: 3306,
-                user: "app".into(),
-                password: Some("secret".into()),
-                password_required: false,
-                socket: None,
-                database: Some("shop".into()),
-            }))
+            Step::Done(NewConnection {
+                opts: ConnectOptions::MySql(MySqlOptions {
+                    host: "localhost".into(),
+                    port: 3306,
+                    user: "app".into(),
+                    password: Some("secret".into()),
+                    password_required: false,
+                    socket: None,
+                    database: Some("shop".into()),
+                }),
+                name: Some("shopify".into()),
+                save_password: true,
+            })
         );
     }
 
@@ -223,12 +309,33 @@ mod tests {
         feed(&mut w, [key(KeyCode::Down), enter(), enter(), ctrl('u')]);
         feed(&mut w, typed("nope"));
         assert_eq!(
-            feed(&mut w, [enter(), enter(), enter(), enter()]),
+            feed(
+                &mut w,
+                [enter(), enter(), enter(), enter(), enter(), enter()]
+            ),
             Step::Continue
         );
         let s = screen(&w);
         assert!(s.contains("not a port number: nope"), "{s}");
         assert!(s.contains("Port: nope"), "{s}");
+    }
+
+    #[test]
+    fn centered_wizard_is_indented_and_pushed_down() {
+        let w = ConnectWizard::new().centered(100, 40);
+        let lines = w.render();
+        let top = lines.iter().take_while(|l| l.text().is_empty()).count();
+        assert_eq!(top, 13);
+        let title = lines[top].text();
+        assert_eq!(
+            title.chars().take_while(|c| *c == ' ').count(),
+            18,
+            "{title}"
+        );
+        // Keeps working after a pick.
+        let mut w = w;
+        feed(&mut w, [enter()]);
+        assert!(screen(&w).contains("Database file"));
     }
 
     #[test]
@@ -275,19 +382,24 @@ mod tests {
             "{}",
             screen(&w)
         );
-        let done = feed(&mut w, [enter()]);
+        // TLS mode, connection name, save password.
+        let done = feed(&mut w, [enter(), enter(), enter()]);
         assert_eq!(
             done,
-            Step::Done(ConnectOptions::Psql(PsqlOptions {
-                host: "localhost".into(),
-                port: 5432,
-                user: "app".into(),
-                password: Some("secret".into()),
-                password_required: false,
-                dbname: Some("shop".into()),
-                sslmode: SslMode::Disable,
-                sslrootcert: None,
-            }))
+            Step::Done(NewConnection {
+                opts: ConnectOptions::Psql(PsqlOptions {
+                    host: "localhost".into(),
+                    port: 5432,
+                    user: "app".into(),
+                    password: Some("secret".into()),
+                    password_required: false,
+                    dbname: Some("shop".into()),
+                    sslmode: SslMode::Disable,
+                    sslrootcert: None,
+                }),
+                name: None,
+                save_password: false,
+            })
         );
     }
 
@@ -303,9 +415,9 @@ mod tests {
         feed(&mut w, [enter(), enter(), enter()]);
         feed(&mut w, [key(KeyCode::Right), key(KeyCode::Right)]);
         assert!(screen(&w).contains("( ) disable  ( ) prefer  (*) require"));
-        let done = feed(&mut w, [enter()]);
+        let done = feed(&mut w, [enter(), enter(), enter()]);
         assert!(
-            matches!(done, Step::Done(ConnectOptions::Psql(p)) if p.sslmode == SslMode::Require)
+            matches!(done, Step::Done(NewConnection { opts: ConnectOptions::Psql(p), .. }) if p.sslmode == SslMode::Require)
         );
     }
 }

@@ -22,9 +22,28 @@ pub fn history_file() -> Option<PathBuf> {
     app_dir().map(|d| d.join("history"))
 }
 
+/// Saved connections: `~/.dato/connections.json`.
+pub fn connections_file() -> Option<PathBuf> {
+    app_dir().map(|d| d.join("connections.json"))
+}
+
 /// Buffer the external editor opens for Ctrl-O: `~/.dato/edit.sql`.
 pub fn edit_buffer() -> Option<PathBuf> {
     app_dir().map(|d| d.join("edit.sql"))
+}
+
+/// Replaces a leading `~` or `~/` with the home directory, as a shell would.
+/// Anything else, or an unknown home directory, is returned unchanged.
+pub fn expand_tilde(path: &str) -> PathBuf {
+    let rest = if path == "~" {
+        Some("")
+    } else {
+        path.strip_prefix("~/")
+    };
+    match (rest, dirs::home_dir()) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(path),
+    }
 }
 
 /// Creates `dir` if missing. On Unix it is private to the user (`0700`): history
@@ -76,6 +95,16 @@ pub fn migrate_legacy_history() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tilde_expands_to_home() {
+        let Some(home) = dirs::home_dir() else { return };
+        assert_eq!(expand_tilde("~/a/b.db"), home.join("a/b.db"));
+        assert_eq!(expand_tilde("~"), home);
+        assert_eq!(expand_tilde("~other/x"), Path::new("~other/x"));
+        assert_eq!(expand_tilde("a/~/b"), Path::new("a/~/b"));
+        assert_eq!(expand_tilde("/abs"), Path::new("/abs"));
+    }
 
     #[test]
     fn everything_lives_in_dot_dato() {

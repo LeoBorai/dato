@@ -20,6 +20,14 @@ impl<T: Clone + Display> SelectList<T> {
         Self { items, selected: 0 }
     }
 
+    pub fn items(&self) -> &[T] {
+        &self.items
+    }
+
+    pub fn selected_index(&self) -> usize {
+        self.selected
+    }
+
     pub fn selected(&self) -> &T {
         &self.items[self.selected]
     }
