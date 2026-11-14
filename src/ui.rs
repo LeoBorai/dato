@@ -12,12 +12,42 @@ pub mod atoms;
 pub mod form;
 pub mod molecules;
 pub mod organisms;
+pub mod status_bar;
 pub mod term;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use nu_ansi_term::Style;
+use nu_ansi_term::{Color, Style};
+
+use crate::server::Server;
 
 pub use form::{ConnectForm, Field, FieldValues};
+pub use status_bar::StatusInfo;
+
+/// The color that marks a server: the dot of its saved connections.
+pub fn server_color(server: Server) -> Color {
+    match server {
+        Server::PostgreSql => Color::Cyan,
+        Server::MySql => Color::Yellow,
+        Server::Sqlite => Color::Purple,
+    }
+}
+
+/// Text color that reads well on a background of `bg`.
+pub fn contrast_color(bg: Color) -> Color {
+    match bg {
+        Color::Cyan | Color::Yellow | Color::White | Color::LightGray => Color::Black,
+        _ => Color::White,
+    }
+}
+
+/// How a server is named to the user.
+pub fn server_title(server: Server) -> &'static str {
+    match server {
+        Server::PostgreSql => "PostgreSQL",
+        Server::MySql => "MySQL",
+        Server::Sqlite => "SQLite",
+    }
+}
 
 /// What a widget wants after handling a key.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -216,6 +216,10 @@ impl Client for SqliteClient {
         Arc::new(SqliteInterrupt(self.conn.get_interrupt_handle()))
     }
 
+    fn database(&self) -> Option<String> {
+        Some(self.name.clone())
+    }
+
     fn prompt_label(&self) -> String {
         self.name.clone()
     }

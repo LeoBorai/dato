@@ -154,7 +154,11 @@ pub fn run() -> ExitCode {
             eprintln!("Error: {TARGET_REQUIRED}");
             return ExitCode::from(1);
         }
-        None => {}
+        None => {
+            if io::stdout().is_terminal() {
+                tui::welcome::run(&mut session);
+            }
+        }
         Some(mut opts) => {
             if let Err(e) = ask_password(&mut opts) {
                 eprintln!("Error: cannot read password: {e}");

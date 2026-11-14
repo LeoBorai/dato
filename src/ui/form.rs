@@ -19,10 +19,12 @@ pub struct Field {
     /// When not empty, the field is one of these values, picked with the arrow
     /// keys instead of typed; `default` is the one picked first.
     pub choices: &'static [&'static str],
+    /// A file path: typing `@` opens a menu of files to pick from.
+    pub path: bool,
 }
 
 impl Field {
-    fn text(key: &'static str, label: &'static str, default: impl Into<String>) -> Self {
+    pub(crate) fn text(key: &'static str, label: &'static str, default: impl Into<String>) -> Self {
         Self {
             key,
             label,
@@ -30,10 +32,11 @@ impl Field {
             placeholder: "",
             secret: false,
             choices: &[],
+            path: false,
         }
     }
 
-    fn choice(
+    pub(crate) fn choice(
         key: &'static str,
         label: &'static str,
         choices: &'static [&'static str],
@@ -81,6 +84,7 @@ impl ConnectForm for Server {
         match self {
             Server::Sqlite => vec![Field {
                 placeholder: ":memory:",
+                path: true,
                 ..Field::text("file", "Database file", "")
             }],
             Server::MySql => vec![

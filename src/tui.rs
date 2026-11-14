@@ -2,10 +2,13 @@
 
 pub mod interrupt;
 pub mod session;
+pub mod status;
+pub mod welcome;
 
 use std::borrow::Cow;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use reedline::{
     EditCommand, FileBackedHistory, Prompt, PromptEditMode, PromptHistorySearch,
@@ -16,16 +19,28 @@ use crate::cli::cmd::ask_password;
 use crate::client::ConnectOptions;
 use crate::editor::{self, external};
 use crate::paths;
-use crate::ui::organisms::{ConnectWizard, Pager, too_wide};
+use crate::store::default_name;
+use crate::ui::StatusInfo;
+use crate::ui::organisms::{ConnectWizard, NewConnection, Pager, too_wide};
 use crate::ui::term;
 use session::{Output, Session};
+use status::StatusBar;
 
-struct SqlPrompt {
+struct SqlPrompt<'a> {
+    /// Connection label; empty while the status bar shows the details.
     name: String,
+    /// Redrawn on every repaint, so output or a menu never leaves it damaged.
+    bar: Option<&'a Mutex<StatusBar>>,
+    info: StatusInfo,
 }
 
-impl Prompt for SqlPrompt {
+impl Prompt for SqlPrompt<'_> {
     fn render_prompt_left(&self) -> Cow<'_, str> {
+        if let Some(bar) = self.bar
+            && let Ok(mut bar) = bar.lock()
+        {
+            bar.draw(&self.info);
+        }
         Cow::Owned(self.name.clone())
     }
     fn render_prompt_right(&self) -> Cow<'_, str> {
@@ -92,7 +107,7 @@ pub fn emit(outputs: &[Output], out: &mut dyn Write, err: &mut dyn Write) -> boo
 /// Shows `text` in the pager when it is wider than the terminal, so rows stay
 /// aligned and Left/Right scroll through the columns. Returns `false` (and shows
 /// nothing) when the text fits or stdout is not a terminal; the caller prints it.
-fn page(text: &str) -> bool {
+fn page(text: &str, reserved_rows: usize) -> bool {
     use std::io::IsTerminal;
     if !std::io::stdout().is_terminal() {
         return false;
@@ -104,48 +119,87 @@ fn page(text: &str) -> bool {
         return false;
     }
     // No pager (e.g. raw mode unavailable): fall back to plain output.
-    term::run(&mut Pager::new(text, columns as usize, rows as usize)).is_ok()
+    term::run(&mut Pager::new(
+        text,
+        columns as usize,
+        (rows as usize).saturating_sub(reserved_rows),
+    ))
+    .is_ok()
 }
 
-/// Handles `\\connect`: runs the wizard when `opts` is `None`, asks for the
-/// password when the options need one, then replaces the session's connection.
-/// A cancelled wizard or a failed connect keeps the current connection.
-fn connect(
+/// Asks for the password when the options need one, connects and reports the
+/// outcome. A failed connect keeps the current connection. Returns whether it
+/// connected.
+fn establish(
     session: &mut Session,
-    opts: Option<ConnectOptions>,
+    opts: &mut ConnectOptions,
+    name: Option<String>,
     out: &mut dyn Write,
     err: &mut dyn Write,
-) {
-    let opts = match opts {
-        Some(o) => Some(o),
-        None => match term::run(&mut ConnectWizard::new()) {
-            Ok(o) => o,
-            Err(e) => {
-                let _ = writeln!(err, "Error: cannot run the connect wizard: {e}");
-                return;
-            }
-        },
-    };
-    let Some(mut opts) = opts else {
-        let _ = writeln!(out, "Connect cancelled.");
-        return;
-    };
-    if let Err(e) = ask_password(&mut opts) {
+) -> bool {
+    if let Err(e) = ask_password(opts) {
         let _ = writeln!(err, "Error: cannot read password: {e}");
-        return;
+        return false;
     }
-    match session.connect(&opts) {
+    match session.connect(opts) {
         Ok(()) => {
+            session.set_connection_name(name);
             let _ = writeln!(
                 out,
                 "Connected to {} ({}).",
                 session.prompt_label(),
                 opts.server()
             );
+            true
         }
         Err(e) => {
             let _ = writeln!(err, "Error: {e}");
+            false
         }
+    }
+}
+
+/// Saves a connection made with the wizard under its name (or a default one).
+fn remember(new: &NewConnection, opts: &ConnectOptions, err: &mut dyn Write) {
+    let mut store = welcome::open_store(err);
+    let name = new.name.clone().unwrap_or_else(|| default_name(opts));
+    store.remember(&name, opts, new.save_password, welcome::now());
+    if let Err(e) = store.save() {
+        let _ = writeln!(err, "warning: cannot save the connection: {e}");
+    }
+}
+
+/// Handles `\\connect`: runs the wizard when `opts` is `None`, asks for the
+/// password when the options need one, then replaces the session's connection.
+/// A cancelled wizard or a failed connect keeps the current connection. A
+/// connection made with the wizard is saved for the welcome screen.
+fn connect(
+    session: &mut Session,
+    opts: Option<ConnectOptions>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) {
+    let (mut opts, wizard) = match opts {
+        Some(o) => (o, None),
+        None => match term::run(&mut ConnectWizard::new()) {
+            Ok(Some(new)) => (new.opts.clone(), Some(new)),
+            Ok(None) => {
+                let _ = writeln!(out, "Connect cancelled.");
+                return;
+            }
+            Err(e) => {
+                let _ = writeln!(err, "Error: cannot run the connect wizard: {e}");
+                return;
+            }
+        },
+    };
+    let name = wizard
+        .as_ref()
+        .map(|n| n.name.clone().unwrap_or_else(|| default_name(&n.opts)));
+    if establish(session, &mut opts, name, out, err)
+        && let Some(new) = wizard
+    {
+        remember(&new, &opts, err);
     }
 }
 
@@ -166,11 +220,19 @@ pub fn run(mut session: Session) -> i32 {
         Err(e) => eprintln!("warning: history disabled: cannot create ~/.dato: {e}"),
     }
     let (mut stdout, mut stderr) = (std::io::stdout(), std::io::stderr());
+    let bar = StatusBar::enable().map(Mutex::new);
 
     loop {
         // Rebuilt each time: `\\connect` and MySQL `USE` change the label.
         let prompt = SqlPrompt {
-            name: session.prompt_label(),
+            // The status bar replaces the label when there is one.
+            name: if bar.is_some() {
+                String::new()
+            } else {
+                session.prompt_label()
+            },
+            bar: bar.as_ref(),
+            info: session.status(),
         };
         match line_editor.read_line(&prompt) {
             Ok(Signal::Success(buffer)) => {
@@ -193,7 +255,7 @@ pub fn run(mut session: Session) -> i32 {
                             connect(&mut session, Some(opts), &mut stdout, &mut stderr);
                             false
                         }
-                        Output::Text(text) if page(&text) => false,
+                        Output::Text(text) if page(&text, usize::from(bar.is_some())) => false,
                         other => emit(&[other], &mut stdout, &mut stderr),
                     };
                     if quit {

@@ -65,6 +65,11 @@ pub trait Client: Send {
     /// Identifies the connection in the prompt. Read on every prompt, so it may
     /// change during the session (e.g. after MySQL `USE`).
     fn prompt_label(&self) -> String;
+    /// The database in use, shown in the status bar. May change during the
+    /// session (e.g. after MySQL `USE`).
+    fn database(&self) -> Option<String> {
+        None
+    }
 
     /// Every table and view of the current database with its columns, sorted by
     /// name. Servers that can read this in one round trip override it.
@@ -131,6 +136,19 @@ impl ConnectOptions {
         }
     }
 
+    /// Host and port to show in the status bar. SQLite has neither; a MySQL
+    /// socket stands in for the host.
+    pub fn endpoint(&self) -> (Option<String>, Option<u16>) {
+        match self {
+            ConnectOptions::Sqlite { .. } => (None, None),
+            ConnectOptions::MySql(o) => match &o.socket {
+                Some(s) => (Some(s.clone()), None),
+                None => (Some(o.host.clone()), Some(o.port)),
+            },
+            ConnectOptions::Psql(o) => (Some(o.host.clone()), Some(o.port)),
+        }
+    }
+
     /// The prompt to ask for a password with, when these options ask for one
     /// that is not set yet.
     pub fn needs_password(&self) -> Option<&'static str> {
@@ -158,7 +176,7 @@ impl ConnectOptions {
     pub fn sqlite(path: Option<&str>) -> Self {
         let path = match path {
             None | Some("") | Some(":memory:") => None,
-            Some(p) => Some(p.to_string()),
+            Some(p) => Some(crate::paths::expand_tilde(p).to_string_lossy().into_owned()),
         };
         ConnectOptions::Sqlite { path }
     }
@@ -193,6 +211,17 @@ pub fn open(opts: &ConnectOptions) -> Result<Box<dyn Client>, ClientError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sqlite_path_expands_tilde() {
+        let Some(home) = dirs::home_dir() else { return };
+        assert_eq!(
+            ConnectOptions::sqlite(Some("~/app.db")),
+            ConnectOptions::Sqlite {
+                path: Some(home.join("app.db").to_string_lossy().into_owned())
+            }
+        );
+    }
 
     #[test]
     fn sqlite_options_from_path() {
