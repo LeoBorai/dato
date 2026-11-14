@@ -2,11 +2,13 @@
 
 pub mod interrupt;
 pub mod session;
+pub mod status;
 pub mod welcome;
 
 use std::borrow::Cow;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use reedline::{
     EditCommand, FileBackedHistory, Prompt, PromptEditMode, PromptHistorySearch,
@@ -18,16 +20,27 @@ use crate::client::ConnectOptions;
 use crate::editor::{self, external};
 use crate::paths;
 use crate::store::default_name;
+use crate::ui::StatusInfo;
 use crate::ui::organisms::{ConnectWizard, NewConnection, Pager, too_wide};
 use crate::ui::term;
 use session::{Output, Session};
+use status::StatusBar;
 
-struct SqlPrompt {
+struct SqlPrompt<'a> {
+    /// Connection label; empty while the status bar shows the details.
     name: String,
+    /// Redrawn on every repaint, so output or a menu never leaves it damaged.
+    bar: Option<&'a Mutex<StatusBar>>,
+    info: StatusInfo,
 }
 
-impl Prompt for SqlPrompt {
+impl Prompt for SqlPrompt<'_> {
     fn render_prompt_left(&self) -> Cow<'_, str> {
+        if let Some(bar) = self.bar
+            && let Ok(mut bar) = bar.lock()
+        {
+            bar.draw(&self.info);
+        }
         Cow::Owned(self.name.clone())
     }
     fn render_prompt_right(&self) -> Cow<'_, str> {
@@ -94,7 +107,7 @@ pub fn emit(outputs: &[Output], out: &mut dyn Write, err: &mut dyn Write) -> boo
 /// Shows `text` in the pager when it is wider than the terminal, so rows stay
 /// aligned and Left/Right scroll through the columns. Returns `false` (and shows
 /// nothing) when the text fits or stdout is not a terminal; the caller prints it.
-fn page(text: &str) -> bool {
+fn page(text: &str, reserved_rows: usize) -> bool {
     use std::io::IsTerminal;
     if !std::io::stdout().is_terminal() {
         return false;
@@ -106,7 +119,12 @@ fn page(text: &str) -> bool {
         return false;
     }
     // No pager (e.g. raw mode unavailable): fall back to plain output.
-    term::run(&mut Pager::new(text, columns as usize, rows as usize)).is_ok()
+    term::run(&mut Pager::new(
+        text,
+        columns as usize,
+        (rows as usize).saturating_sub(reserved_rows),
+    ))
+    .is_ok()
 }
 
 /// Asks for the password when the options need one, connects and reports the
@@ -115,6 +133,7 @@ fn page(text: &str) -> bool {
 fn establish(
     session: &mut Session,
     opts: &mut ConnectOptions,
+    name: Option<String>,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> bool {
@@ -124,6 +143,7 @@ fn establish(
     }
     match session.connect(opts) {
         Ok(()) => {
+            session.set_connection_name(name);
             let _ = writeln!(
                 out,
                 "Connected to {} ({}).",
@@ -173,7 +193,10 @@ fn connect(
             }
         },
     };
-    if establish(session, &mut opts, out, err)
+    let name = wizard
+        .as_ref()
+        .map(|n| n.name.clone().unwrap_or_else(|| default_name(&n.opts)));
+    if establish(session, &mut opts, name, out, err)
         && let Some(new) = wizard
     {
         remember(&new, &opts, err);
@@ -197,11 +220,19 @@ pub fn run(mut session: Session) -> i32 {
         Err(e) => eprintln!("warning: history disabled: cannot create ~/.dato: {e}"),
     }
     let (mut stdout, mut stderr) = (std::io::stdout(), std::io::stderr());
+    let bar = StatusBar::enable().map(Mutex::new);
 
     loop {
         // Rebuilt each time: `\\connect` and MySQL `USE` change the label.
         let prompt = SqlPrompt {
-            name: session.prompt_label(),
+            // The status bar replaces the label when there is one.
+            name: if bar.is_some() {
+                String::new()
+            } else {
+                session.prompt_label()
+            },
+            bar: bar.as_ref(),
+            info: session.status(),
         };
         match line_editor.read_line(&prompt) {
             Ok(Signal::Success(buffer)) => {
@@ -224,7 +255,7 @@ pub fn run(mut session: Session) -> i32 {
                             connect(&mut session, Some(opts), &mut stdout, &mut stderr);
                             false
                         }
-                        Output::Text(text) if page(&text) => false,
+                        Output::Text(text) if page(&text, usize::from(bar.is_some())) => false,
                         other => emit(&[other], &mut stdout, &mut stderr),
                     };
                     if quit {

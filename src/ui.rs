@@ -12,6 +12,7 @@ pub mod atoms;
 pub mod form;
 pub mod molecules;
 pub mod organisms;
+pub mod status_bar;
 pub mod term;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -20,6 +21,7 @@ use nu_ansi_term::{Color, Style};
 use crate::server::Server;
 
 pub use form::{ConnectForm, Field, FieldValues};
+pub use status_bar::StatusInfo;
 
 /// The color that marks a server: the dot of its saved connections.
 pub fn server_color(server: Server) -> Color {
@@ -27,6 +29,14 @@ pub fn server_color(server: Server) -> Color {
         Server::PostgreSql => Color::Cyan,
         Server::MySql => Color::Yellow,
         Server::Sqlite => Color::Purple,
+    }
+}
+
+/// Text color that reads well on a background of `bg`.
+pub fn contrast_color(bg: Color) -> Color {
+    match bg {
+        Color::Cyan | Color::Yellow | Color::White | Color::LightGray => Color::Black,
+        _ => Color::White,
     }
 }
 

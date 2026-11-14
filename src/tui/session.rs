@@ -104,6 +104,10 @@ pub struct Session {
     schema: Arc<RwLock<SchemaCache>>,
     /// Server whose dialect the editor uses; SQLite while disconnected.
     dialect: Arc<RwLock<Server>>,
+    /// Where and as what the current connection was made, for the status bar.
+    host: Option<String>,
+    port: Option<u16>,
+    connection_name: Option<String>,
 }
 
 pub fn status_line(result: &StatementResult, elapsed: Duration) -> String {
@@ -136,6 +140,9 @@ impl Session {
             show_status,
             schema: Arc::default(),
             dialect: Arc::new(RwLock::new(Server::Sqlite)),
+            host: None,
+            port: None,
+            connection_name: None,
         }
     }
 
@@ -144,7 +151,25 @@ impl Session {
     pub fn connect(&mut self, opts: &ConnectOptions) -> Result<(), ClientError> {
         let client = db::open(opts)?;
         self.replace_client(client);
+        (self.host, self.port) = opts.endpoint();
+        self.connection_name = None;
         Ok(())
+    }
+
+    /// Names the current connection in the status bar.
+    pub fn set_connection_name(&mut self, name: Option<String>) {
+        self.connection_name = name;
+    }
+
+    /// What the status bar shows.
+    pub fn status(&self) -> crate::ui::StatusInfo {
+        crate::ui::StatusInfo {
+            server: self.server(),
+            name: self.connection_name.clone(),
+            host: self.host.clone(),
+            port: self.port,
+            database: self.client.as_ref().and_then(|c| c.database()),
+        }
     }
 
     fn replace_client(&mut self, client: Box<dyn Client>) {

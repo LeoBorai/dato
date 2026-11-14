@@ -65,6 +65,11 @@ pub trait Client: Send {
     /// Identifies the connection in the prompt. Read on every prompt, so it may
     /// change during the session (e.g. after MySQL `USE`).
     fn prompt_label(&self) -> String;
+    /// The database in use, shown in the status bar. May change during the
+    /// session (e.g. after MySQL `USE`).
+    fn database(&self) -> Option<String> {
+        None
+    }
 
     /// Every table and view of the current database with its columns, sorted by
     /// name. Servers that can read this in one round trip override it.
@@ -128,6 +133,19 @@ impl ConnectOptions {
             ConnectOptions::Sqlite { .. } => Server::Sqlite,
             ConnectOptions::MySql(_) => Server::MySql,
             ConnectOptions::Psql(_) => Server::PostgreSql,
+        }
+    }
+
+    /// Host and port to show in the status bar. SQLite has neither; a MySQL
+    /// socket stands in for the host.
+    pub fn endpoint(&self) -> (Option<String>, Option<u16>) {
+        match self {
+            ConnectOptions::Sqlite { .. } => (None, None),
+            ConnectOptions::MySql(o) => match &o.socket {
+                Some(s) => (Some(s.clone()), None),
+                None => (Some(o.host.clone()), Some(o.port)),
+            },
+            ConnectOptions::Psql(o) => (Some(o.host.clone()), Some(o.port)),
         }
     }
 

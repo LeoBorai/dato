@@ -32,7 +32,9 @@ impl SavedConnection {
     /// `user@host:port`, or the database file for SQLite.
     pub fn detail(&self) -> String {
         match &self.opts {
-            ConnectOptions::Sqlite { path } => path.clone().unwrap_or_else(|| ":memory:".into()),
+            ConnectOptions::Sqlite { path } => path
+                .as_deref()
+                .map_or_else(|| ":memory:".into(), crate::paths::collapse_home),
             ConnectOptions::MySql(o) => format!("{}@{}:{}", o.user, o.host, o.port),
             ConnectOptions::Psql(o) => format!("{}@{}:{}", o.user, o.host, o.port),
         }

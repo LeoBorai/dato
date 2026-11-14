@@ -104,7 +104,7 @@ pub fn run(session: &mut Session) {
                 }
             }
         };
-        if !establish(session, &mut opts, &mut out, &mut err) {
+        if !establish(session, &mut opts, Some(name.clone()), &mut out, &mut err) {
             let _ = writeln!(err, "Press Enter to go back.");
             let _ = std::io::stdin().read_line(&mut String::new());
             continue;
