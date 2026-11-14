@@ -74,16 +74,23 @@ pub fn render(rs: &ResultSet, format: Format, out: &mut dyn Write) -> io::Result
 
     match format {
         Format::Ascii => {
-            let sep = format!(
-                "+{}+\n",
-                widths
-                    .iter()
-                    .map(|w| "-".repeat(w + 2))
-                    .collect::<Vec<_>>()
-                    .join("+")
+            let rule = |left: &str, mid: &str, right: &str| {
+                format!(
+                    "{left}{}{right}\n",
+                    widths
+                        .iter()
+                        .map(|w| "─".repeat(w + 2))
+                        .collect::<Vec<_>>()
+                        .join(mid)
+                )
+            };
+            let (top, sep, bottom) = (
+                rule("┌", "┬", "┐"),
+                rule("├", "┼", "┤"),
+                rule("└", "┴", "┘"),
             );
-            let line = |cells: Vec<String>| format!("| {} |\n", cells.join(" | "));
-            write!(out, "{sep}")?;
+            let line = |cells: Vec<String>| format!("│ {} │\n", cells.join(" │ "));
+            write!(out, "{top}")?;
             write!(
                 out,
                 "{}",
@@ -95,7 +102,8 @@ pub fn render(rs: &ResultSet, format: Format, out: &mut dyn Write) -> io::Result
                         .collect()
                 )
             )?;
-            write!(out, "{sep}")?;
+            // A table without rows closes right under its header.
+            write!(out, "{}", if rows.is_empty() { &bottom } else { &sep })?;
             for row in &rows {
                 write!(
                     out,
@@ -110,7 +118,7 @@ pub fn render(rs: &ResultSet, format: Format, out: &mut dyn Write) -> io::Result
                 )?;
             }
             if !rows.is_empty() {
-                write!(out, "{sep}")?;
+                write!(out, "{bottom}")?;
             }
         }
         Format::Psql => {
@@ -211,7 +219,7 @@ mod tests {
         let r = rs("n", vec![Value::Integer(1), Value::Integer(22)]);
         assert_eq!(
             render_to_string(&r, Format::Ascii),
-            "+----+\n| n  |\n+----+\n|  1 |\n| 22 |\n+----+\n"
+            "┌────┐\n│ n  │\n├────┤\n│  1 │\n│ 22 │\n└────┘\n"
         );
     }
 
@@ -223,7 +231,7 @@ mod tests {
         );
         assert_eq!(
             render_to_string(&r, Format::Ascii),
-            "+------+\n| c    |\n+------+\n| 日本 |\n| ab   |\n+------+\n"
+            "┌──────┐\n│ c    │\n├──────┤\n│ 日本 │\n│ ab   │\n└──────┘\n"
         );
     }
 
@@ -246,7 +254,7 @@ mod tests {
     #[test]
     fn ascii_empty_result_shows_header() {
         let r = rs("a", vec![]);
-        assert_eq!(render_to_string(&r, Format::Ascii), "+---+\n| a |\n+---+\n");
+        assert_eq!(render_to_string(&r, Format::Ascii), "┌───┐\n│ a │\n└───┘\n");
     }
 
     #[test]

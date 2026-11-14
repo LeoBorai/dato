@@ -17,36 +17,61 @@ use crate::cli::cmd::ask_password;
 use crate::client::ConnectOptions;
 use crate::editor::{self, external};
 use crate::paths;
-use crate::server::Server;
 use crate::store::default_name;
 use crate::ui::organisms::{ConnectWizard, NewConnection, Pager, too_wide};
-use crate::ui::{server_color, term};
-use session::{Output, Session};
+use crate::ui::{server_color, server_title, term};
+use nu_ansi_term::{Color, Style};
+use session::{Output, PromptInfo, Session};
+use std::time::Duration;
 
 /// Marks the end of the connection name; takes the server's color.
 const DIVIDER: &str = "✱";
 /// Ends the prompt; `...` marks the continuation lines of a statement.
-const INDICATOR: &str = " ▶︎ ";
-const MULTILINE_INDICATOR: &str = "... ";
+const INDICATOR: &str = "▶︎ ";
+const MULTILINE_INDICATOR: &str = "↩︎ ";
 
 struct SqlPrompt {
-    name: String,
-    /// `user@host:port` or the SQLite file.
-    detail: Option<String>,
-    server: Option<Server>,
+    info: PromptInfo,
+}
+
+/// Shortest command time worth showing.
+const SLOW: Duration = Duration::from_secs(2);
+
+/// `2s`, `1m 5s`, `1h 2m`.
+fn format_took(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m {}s", s / 60, s % 60),
+        _ => format!("{}h {}m", s / 3600, s % 3600 / 60),
+    }
 }
 
 impl SqlPrompt {
-    /// `name ✱ detail`, the ✱ in the server's color.
+    /// The prompt's own line, like `shopify ✱ app@localhost:5432 on shop via ● PostgreSQL took 2s`.
+    /// The ✱ and ● take the server's color. The input goes on the next line,
+    /// after the indicator.
     fn left(&self) -> String {
-        let Some(detail) = &self.detail else {
-            return self.name.clone();
-        };
-        let divider = match self.server {
-            Some(s) => server_color(s).bold().paint(DIVIDER).to_string(),
-            None => DIVIDER.to_string(),
-        };
-        format!("{} {divider} {detail}", self.name)
+        let i = &self.info;
+        let dim = dim();
+        let accent = i.server.map(|s| Style::new().bold().fg(server_color(s)));
+        let mut out = Style::new().bold().paint(&i.name).to_string();
+        if let Some(detail) = &i.detail {
+            let divider = accent.map_or(DIVIDER.to_string(), |a| a.paint(DIVIDER).to_string());
+            out += &format!(" {divider} {detail}");
+        }
+        if let Some(db) = &i.database {
+            out += &format!(" {} {db}", dim.paint("on"));
+        }
+        if let Some(server) = i.server {
+            let dot = Style::new().fg(server_color(server)).paint("●");
+            out += &format!(" {} {dot} {}", dim.paint("via"), server_title(server));
+        }
+        if let Some(took) = i.took.filter(|t| *t >= SLOW) {
+            out += &format!(" {} {}", dim.paint("took"), format_took(took));
+        }
+        out.push('\n');
+        out
     }
 }
 
@@ -90,11 +115,36 @@ pub fn history_path() -> Option<PathBuf> {
     paths::history_file()
 }
 
-/// Prints outputs: text and status to stdout, errors to stderr.
-/// Returns `true` when a quit was requested.
 /// Whether to color messages on stderr: it is a terminal and `NO_COLOR` is not set.
 pub fn use_color() -> bool {
-    std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+    std::io::stderr().is_terminal() && no_color_unset()
+}
+
+fn no_color_unset() -> bool {
+    std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+}
+
+/// Which of the output streams get colors.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Colors {
+    pub stdout: bool,
+    pub stderr: bool,
+}
+
+impl Colors {
+    /// Colors for each stream that is a terminal, unless `NO_COLOR` is set.
+    pub fn detect() -> Self {
+        Self {
+            stdout: std::io::stdout().is_terminal() && no_color_unset(),
+            stderr: use_color(),
+        }
+    }
+}
+
+/// The soft gray of secondary text: the `via` in the prompt and the row
+/// count after a result.
+pub fn dim() -> Style {
+    Style::new().fg(Color::DarkGray)
 }
 
 /// `⚠ Error: message`, in red when `color`.
@@ -107,7 +157,9 @@ pub fn error_line(message: impl std::fmt::Display, color: bool) -> String {
     }
 }
 
-pub fn emit(outputs: &[Output], out: &mut dyn Write, err: &mut dyn Write, color: bool) -> bool {
+/// Prints outputs: text and status to stdout, errors to stderr.
+/// Returns `true` when a quit was requested.
+pub fn emit(outputs: &[Output], out: &mut dyn Write, err: &mut dyn Write, colors: Colors) -> bool {
     let mut quit = false;
     for o in outputs {
         match o {
@@ -118,15 +170,19 @@ pub fn emit(outputs: &[Output], out: &mut dyn Write, err: &mut dyn Write, color:
                 }
             }
             Output::Status(s) => {
-                let _ = writeln!(out, "{s}");
+                if colors.stdout {
+                    let _ = writeln!(out, "{}", dim().paint(s));
+                } else {
+                    let _ = writeln!(out, "{s}");
+                }
             }
             Output::Error(e) => {
-                let _ = writeln!(err, "{}", error_line(e, color));
+                let _ = writeln!(err, "{}", error_line(e, colors.stderr));
             }
             Output::Quit => quit = true,
             // Connecting needs a terminal; the shell handles these before emitting.
             Output::ConnectWizard | Output::Connect(_) => {
-                let _ = writeln!(err, "{}", error_line(NOT_INTERACTIVE, color));
+                let _ = writeln!(err, "{}", error_line(NOT_INTERACTIVE, colors.stderr));
             }
         }
     }
@@ -258,11 +314,8 @@ pub fn run(mut session: Session) -> i32 {
 
     loop {
         // Rebuilt each time: `\\connect` and MySQL `USE` change the label.
-        let (name, detail) = session.prompt_parts();
         let prompt = SqlPrompt {
-            name,
-            detail,
-            server: session.server(),
+            info: session.prompt_info(),
         };
         match line_editor.read_line(&prompt) {
             Ok(Signal::Success(buffer)) => {
@@ -289,7 +342,7 @@ pub fn run(mut session: Session) -> i32 {
                             false
                         }
                         Output::Text(text) if page(&text) => false,
-                        other => emit(&[other], &mut stdout, &mut stderr, use_color()),
+                        other => emit(&[other], &mut stdout, &mut stderr, Colors::detect()),
                     };
                     if quit {
                         return 0;
@@ -310,6 +363,7 @@ pub fn run(mut session: Session) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::Server;
 
     #[test]
     fn emit_routes_streams_and_detects_quit() {
@@ -323,7 +377,7 @@ mod tests {
             ],
             &mut out,
             &mut err,
-            false,
+            Colors::default(),
         );
         assert!(quit);
         assert_eq!(String::from_utf8(out).unwrap(), "a\n1 row in set\n");
@@ -343,42 +397,84 @@ mod tests {
             &[Output::Error("boom".into())],
             &mut Vec::new(),
             &mut err,
-            true,
+            Colors {
+                stdout: false,
+                stderr: true,
+            },
         );
         assert_eq!(String::from_utf8(err).unwrap(), format!("{red}\n"));
     }
 
     #[test]
-    fn prompt_has_the_name_a_colored_divider_and_the_details() {
-        let prompt = |server| SqlPrompt {
+    fn status_line_is_soft_gray_only_with_color() {
+        let status = [Output::Status("17 rows in set, 0.002s".into())];
+        let mut out = Vec::new();
+        emit(&status, &mut out, &mut Vec::new(), Colors::default());
+        assert_eq!(String::from_utf8(out).unwrap(), "17 rows in set, 0.002s\n");
+        let mut out = Vec::new();
+        let colors = Colors {
+            stdout: true,
+            stderr: false,
+        };
+        emit(&status, &mut out, &mut Vec::new(), colors);
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text, format!("{}\n", dim().paint("17 rows in set, 0.002s")));
+        assert!(text.starts_with("\x1b["), "{text:?}");
+    }
+
+    fn plain(s: &str) -> String {
+        let mut out = String::new();
+        let mut esc = false;
+        for c in s.chars() {
+            match (esc, c) {
+                (_, '\x1b') => esc = true,
+                (true, 'm') => esc = false,
+                (false, c) => out.push(c),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn info() -> PromptInfo {
+        PromptInfo {
             name: "shopify".into(),
             detail: Some("app@localhost:5432".into()),
-            server,
+            database: Some("shop".into()),
+            server: Some(Server::PostgreSql),
+            took: Some(Duration::from_millis(2400)),
+        }
+    }
+
+    #[test]
+    fn prompt_line_has_name_details_database_server_and_time() {
+        let left = SqlPrompt { info: info() }.left();
+        assert!(left.contains("\x1b["), "{left:?}");
+        assert_eq!(
+            plain(&left),
+            "shopify ✱ app@localhost:5432 on shop via ● PostgreSQL took 2s\n"
+        );
+    }
+
+    #[test]
+    fn quick_commands_and_missing_parts_are_left_out() {
+        let quick = PromptInfo {
+            took: Some(Duration::from_millis(1900)),
+            database: None,
+            ..info()
         };
-        let strip = |s: String| {
-            let mut out = String::new();
-            let mut esc = false;
-            for c in s.chars() {
-                match (esc, c) {
-                    (_, '\x1b') => esc = true,
-                    (true, 'm') => esc = false,
-                    (false, c) => out.push(c),
-                    _ => {}
-                }
-            }
-            out
-        };
-        let colored = prompt(Some(Server::PostgreSql)).left();
-        assert!(colored.contains("\x1b["), "{colored:?}");
-        assert_eq!(strip(colored), "shopify ✱ app@localhost:5432");
-        assert_eq!(prompt(None).left(), "shopify ✱ app@localhost:5432");
-        let none = SqlPrompt {
+        assert_eq!(
+            plain(&SqlPrompt { info: quick }.left()),
+            "shopify ✱ app@localhost:5432 via ● PostgreSQL\n"
+        );
+        let none = PromptInfo {
             name: "(none)".into(),
-            detail: None,
-            server: None,
+            ..Default::default()
         };
-        assert_eq!(none.left(), "(none)");
-        assert_eq!(INDICATOR, " ▶\u{fe0e} ");
+        assert_eq!(plain(&SqlPrompt { info: none }.left()), "(none)\n");
+        assert_eq!(format_took(Duration::from_secs(65)), "1m 5s");
+        assert_eq!(format_took(Duration::from_secs(3700)), "1h 1m");
+        assert_eq!(INDICATOR, "▶\u{fe0e} ");
     }
 
     #[test]

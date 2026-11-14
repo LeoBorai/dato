@@ -98,6 +98,18 @@ pub struct NotConnected;
 /// Prompt label while disconnected.
 pub const DISCONNECTED_LABEL: &str = "(none)";
 
+/// The parts of the prompt's first line.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromptInfo {
+    pub name: String,
+    /// `user@host:port` or the SQLite file.
+    pub detail: Option<String>,
+    pub database: Option<String>,
+    pub server: Option<Server>,
+    /// How long the last statement took.
+    pub took: Option<Duration>,
+}
+
 pub struct Session {
     client: Option<Box<dyn Client>>,
     pub(crate) format: Format,
@@ -109,6 +121,7 @@ pub struct Session {
     connection_name: Option<String>,
     /// `user@host:port` or the SQLite file, shown after the name.
     connection_detail: String,
+    last_elapsed: Option<Duration>,
 }
 
 pub fn status_line(result: &StatementResult, elapsed: Duration) -> String {
@@ -143,6 +156,7 @@ impl Session {
             dialect: Arc::new(RwLock::new(Server::Sqlite)),
             connection_name: None,
             connection_detail: String::new(),
+            last_elapsed: None,
         }
     }
 
@@ -153,6 +167,7 @@ impl Session {
         self.replace_client(client);
         self.connection_name = Some(default_name(opts));
         self.connection_detail = prompt_detail(opts);
+        self.last_elapsed = None;
         Ok(())
     }
 
@@ -161,16 +176,23 @@ impl Session {
         self.connection_name = Some(name);
     }
 
-    /// What the prompt shows: the connection's name and, after it,
-    /// `user@host:port` (or the SQLite file).
-    pub fn prompt_parts(&self) -> (String, Option<String>) {
-        match (&self.client, &self.connection_name) {
-            (Some(_), Some(name)) => (
-                name.clone(),
-                Some(self.connection_detail.clone()).filter(|d| !d.is_empty()),
-            ),
-            (Some(c), None) => (c.prompt_label(), None),
-            (None, _) => (DISCONNECTED_LABEL.to_string(), None),
+    /// What the prompt's first line shows.
+    pub fn prompt_info(&self) -> PromptInfo {
+        let Some(client) = &self.client else {
+            return PromptInfo {
+                name: DISCONNECTED_LABEL.to_string(),
+                ..Default::default()
+            };
+        };
+        PromptInfo {
+            name: self
+                .connection_name
+                .clone()
+                .unwrap_or_else(|| client.prompt_label()),
+            detail: Some(self.connection_detail.clone()).filter(|d| !d.is_empty()),
+            database: client.database(),
+            server: Some(client.server()),
+            took: self.last_elapsed,
         }
     }
 
@@ -277,6 +299,7 @@ impl Session {
                 client.execute(stmt)
             };
             let elapsed = started.elapsed();
+            self.last_elapsed = Some(elapsed);
             match result {
                 Ok(results) => {
                     for r in &results {
@@ -336,14 +359,15 @@ mod tests {
         let mut s = Session::disconnected(Format::Tsv, false);
         s.connect(&ConnectOptions::sqlite(Some("/x/app.db"))).ok();
         // Not opened (no such directory), so still disconnected.
-        assert_eq!(s.prompt_parts(), ("(none)".into(), None));
+        assert_eq!(s.prompt_info().name, "(none)");
         s.connect(&ConnectOptions::sqlite(None)).unwrap();
-        assert_eq!(s.prompt_parts(), ("memory".into(), Some(":memory:".into())));
+        assert_eq!(s.prompt_info().name, "memory");
+        assert_eq!(s.prompt_info().detail.as_deref(), Some(":memory:"));
         s.set_connection_name("shopify".into());
-        assert_eq!(
-            s.prompt_parts(),
-            ("shopify".into(), Some(":memory:".into()))
-        );
+        assert_eq!(s.prompt_info().name, "shopify");
+        assert_eq!(s.prompt_info().took, None);
+        s.handle("select 1;");
+        assert!(s.prompt_info().took.is_some());
     }
 
     #[test]
@@ -352,7 +376,7 @@ mod tests {
         let out = s.handle("select * from missing;");
         assert!(matches!(&out[0], Output::Error(e) if e.contains("no such table: missing")));
         let out = s.handle("select 1 as n;");
-        assert!(texts(&out).contains("| n |"));
+        assert!(texts(&out).contains("│ n │"));
     }
 
     #[test]
@@ -423,7 +447,7 @@ mod tests {
         let mut s = Session::disconnected(Format::Ascii, false);
         assert!(!s.is_connected());
         assert_eq!(s.prompt_label(), "(none)");
-        assert_eq!(s.prompt_parts(), ("(none)".into(), None));
+        assert_eq!(s.prompt_info().name, "(none)");
         let out = s.handle("select 1;");
         assert!(
             matches!(&out[0], Output::Error(e) if e.contains("\\connect")),
@@ -487,6 +511,6 @@ mod tests {
         done.store(true, Ordering::Relaxed);
         t.join().unwrap();
         assert!(matches!(&out[0], Output::Error(e) if e.contains("interrupted")));
-        assert!(texts(&s.handle("select 1;")).contains("| 1 |"));
+        assert!(texts(&s.handle("select 1;")).contains("│ 1 │"));
     }
 }

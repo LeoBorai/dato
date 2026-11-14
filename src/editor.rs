@@ -26,7 +26,7 @@ use menu::QuietMenu;
 const MENU: &str = "completion_menu";
 
 /// Replaces the prompt indicator while suggestions are showing.
-pub const MENU_INDICATOR: &str = " ▷ ";
+pub const MENU_INDICATOR: &str = "▷ ";
 
 /// Builds the line editor. Ctrl-O opens `$VISUAL`/`$EDITOR`; Alt-Enter submits
 /// even when the statement looks unfinished.

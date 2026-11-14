@@ -124,7 +124,7 @@ pub fn run_batch(
                 Output::Error(_) | Output::ConnectWizard | Output::Connect(_)
             )
         });
-        let quit = tui::emit(&outputs, out, err, tui::use_color());
+        let quit = tui::emit(&outputs, out, err, tui::Colors::detect());
         if failed {
             return 1;
         }
