@@ -22,6 +22,12 @@ impl Menu for QuietMenu {
         self.0.settings()
     }
 
+    /// Without suggestions the menu draws nothing, so it must not take over
+    /// the prompt indicator either.
+    fn is_visible(&self) -> bool {
+        self.0.is_visible() && !self.empty()
+    }
+
     fn is_active(&self) -> bool {
         self.0.is_active()
     }

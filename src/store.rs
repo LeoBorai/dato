@@ -131,6 +131,29 @@ pub fn default_name(opts: &ConnectOptions) -> String {
     }
 }
 
+/// What the prompt shows after the connection name: `user@host:port`, or for
+/// SQLite the file and the directory it is in (`dir/app.db`).
+pub fn prompt_detail(opts: &ConnectOptions) -> String {
+    match opts {
+        ConnectOptions::Sqlite { path: None } => ":memory:".into(),
+        ConnectOptions::Sqlite { path: Some(p) } => {
+            let path = std::path::Path::new(p);
+            let file = path.file_name().map(|f| f.to_string_lossy().into_owned());
+            let dir = path
+                .parent()
+                .and_then(|d| d.file_name())
+                .map(|d| d.to_string_lossy().into_owned());
+            match (dir, file) {
+                (Some(d), Some(f)) => format!("{d}/{f}"),
+                (None, Some(f)) => f,
+                _ => p.clone(),
+            }
+        }
+        ConnectOptions::MySql(o) => format!("{}@{}:{}", o.user, o.host, o.port),
+        ConnectOptions::Psql(o) => format!("{}@{}:{}", o.user, o.host, o.port),
+    }
+}
+
 /// Options as they are stored: the password is dropped unless `keep_password`.
 /// A dropped password makes the next connect ask for one.
 fn sanitize(opts: &ConnectOptions, keep_password: bool) -> ConnectOptions {
@@ -329,6 +352,20 @@ mod tests {
         let path = dir.path().join("connections.json");
         std::fs::write(&path, "{nope").unwrap();
         assert!(Store::load(path).is_err());
+    }
+
+    #[test]
+    fn prompt_details() {
+        assert_eq!(prompt_detail(&pg("shop", None)), "app@localhost:5432");
+        let lite = |p| prompt_detail(&ConnectOptions::sqlite(Some(p)));
+        assert_eq!(
+            lite("/home/u/Code/scout/scout.sqlite3"),
+            "scout/scout.sqlite3"
+        );
+        assert_eq!(lite("app.db"), "app.db");
+        assert_eq!(lite("./app.db"), "app.db");
+        assert_eq!(lite("data/app.db"), "data/app.db");
+        assert_eq!(prompt_detail(&ConnectOptions::sqlite(None)), ":memory:");
     }
 
     #[test]

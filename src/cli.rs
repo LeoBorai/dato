@@ -124,7 +124,7 @@ pub fn run_batch(
                 Output::Error(_) | Output::ConnectWizard | Output::Connect(_)
             )
         });
-        let quit = tui::emit(&outputs, out, err);
+        let quit = tui::emit(&outputs, out, err, tui::use_color());
         if failed {
             return 1;
         }
@@ -144,14 +144,14 @@ pub fn run() -> ExitCode {
     let opts = match startup_options(&args) {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("Error: {e}");
+            eprintln!("{}", tui::error_line(e, tui::use_color()));
             return ExitCode::from(2);
         }
     };
     let mut session = Session::disconnected(format, interactive);
     match opts {
         None if !interactive => {
-            eprintln!("Error: {TARGET_REQUIRED}");
+            eprintln!("{}", tui::error_line(TARGET_REQUIRED, tui::use_color()));
             return ExitCode::from(1);
         }
         None => {
@@ -161,11 +161,14 @@ pub fn run() -> ExitCode {
         }
         Some(mut opts) => {
             if let Err(e) = ask_password(&mut opts) {
-                eprintln!("Error: cannot read password: {e}");
+                eprintln!(
+                    "{}",
+                    tui::error_line(format!("cannot read password: {e}"), tui::use_color())
+                );
                 return ExitCode::from(1);
             }
             if let Err(e) = session.connect(&opts) {
-                eprintln!("Error: {e}");
+                eprintln!("{}", tui::error_line(e, tui::use_color()));
                 return ExitCode::from(1);
             }
         }
@@ -177,7 +180,10 @@ pub fn run() -> ExitCode {
         Mode::Stdin => {
             let mut script = String::new();
             if let Err(e) = io::stdin().read_to_string(&mut script) {
-                eprintln!("Error: cannot read stdin: {e}");
+                eprintln!(
+                    "{}",
+                    tui::error_line(format!("cannot read stdin: {e}"), tui::use_color())
+                );
                 return ExitCode::from(1);
             }
             run_batch(&mut session, &script, &mut io::stdout(), &mut io::stderr())

@@ -11,6 +11,7 @@ pub use crate::client::{Relation, RelationKind};
 use crate::dialect::{Dialect, Qualifier};
 use crate::render::{Format, render_to_string};
 use crate::server::Server;
+use crate::store::{default_name, prompt_detail};
 use crate::{special, sql};
 
 /// What the editor completes from.
@@ -104,10 +105,10 @@ pub struct Session {
     schema: Arc<RwLock<SchemaCache>>,
     /// Server whose dialect the editor uses; SQLite while disconnected.
     dialect: Arc<RwLock<Server>>,
-    /// Where and as what the current connection was made, for the status bar.
-    host: Option<String>,
-    port: Option<u16>,
+    /// Names the connection in the prompt.
     connection_name: Option<String>,
+    /// `user@host:port` or the SQLite file, shown after the name.
+    connection_detail: String,
 }
 
 pub fn status_line(result: &StatementResult, elapsed: Duration) -> String {
@@ -140,9 +141,8 @@ impl Session {
             show_status,
             schema: Arc::default(),
             dialect: Arc::new(RwLock::new(Server::Sqlite)),
-            host: None,
-            port: None,
             connection_name: None,
+            connection_detail: String::new(),
         }
     }
 
@@ -151,24 +151,26 @@ impl Session {
     pub fn connect(&mut self, opts: &ConnectOptions) -> Result<(), ClientError> {
         let client = db::open(opts)?;
         self.replace_client(client);
-        (self.host, self.port) = opts.endpoint();
-        self.connection_name = None;
+        self.connection_name = Some(default_name(opts));
+        self.connection_detail = prompt_detail(opts);
         Ok(())
     }
 
-    /// Names the current connection in the status bar.
-    pub fn set_connection_name(&mut self, name: Option<String>) {
-        self.connection_name = name;
+    /// Names the current connection in the prompt.
+    pub fn set_connection_name(&mut self, name: String) {
+        self.connection_name = Some(name);
     }
 
-    /// What the status bar shows.
-    pub fn status(&self) -> crate::ui::StatusInfo {
-        crate::ui::StatusInfo {
-            server: self.server(),
-            name: self.connection_name.clone(),
-            host: self.host.clone(),
-            port: self.port,
-            database: self.client.as_ref().and_then(|c| c.database()),
+    /// What the prompt shows: the connection's name and, after it,
+    /// `user@host:port` (or the SQLite file).
+    pub fn prompt_parts(&self) -> (String, Option<String>) {
+        match (&self.client, &self.connection_name) {
+            (Some(_), Some(name)) => (
+                name.clone(),
+                Some(self.connection_detail.clone()).filter(|d| !d.is_empty()),
+            ),
+            (Some(c), None) => (c.prompt_label(), None),
+            (None, _) => (DISCONNECTED_LABEL.to_string(), None),
         }
     }
 
@@ -330,6 +332,21 @@ mod tests {
     }
 
     #[test]
+    fn prompt_shows_the_connection_name() {
+        let mut s = Session::disconnected(Format::Tsv, false);
+        s.connect(&ConnectOptions::sqlite(Some("/x/app.db"))).ok();
+        // Not opened (no such directory), so still disconnected.
+        assert_eq!(s.prompt_parts(), ("(none)".into(), None));
+        s.connect(&ConnectOptions::sqlite(None)).unwrap();
+        assert_eq!(s.prompt_parts(), ("memory".into(), Some(":memory:".into())));
+        s.set_connection_name("shopify".into());
+        assert_eq!(
+            s.prompt_parts(),
+            ("shopify".into(), Some(":memory:".into()))
+        );
+    }
+
+    #[test]
     fn recovers_after_error() {
         let mut s = session(false);
         let out = s.handle("select * from missing;");
@@ -406,6 +423,7 @@ mod tests {
         let mut s = Session::disconnected(Format::Ascii, false);
         assert!(!s.is_connected());
         assert_eq!(s.prompt_label(), "(none)");
+        assert_eq!(s.prompt_parts(), ("(none)".into(), None));
         let out = s.handle("select 1;");
         assert!(
             matches!(&out[0], Output::Error(e) if e.contains("\\connect")),

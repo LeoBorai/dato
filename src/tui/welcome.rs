@@ -7,7 +7,7 @@ use crossterm::terminal::{Clear, ClearType};
 use crossterm::{cursor, execute};
 
 use super::session::Session;
-use super::{establish, term};
+use super::{error_line, establish, term, use_color};
 use crate::paths;
 use crate::store::{Store, default_name};
 use crate::ui::organisms::{ConnectWizard, Welcome, WelcomeChoice, WelcomeItem};
@@ -80,7 +80,11 @@ pub fn run(session: &mut Session) {
             Ok(Some(c)) => c,
             Ok(None) => return,
             Err(e) => {
-                let _ = writeln!(err, "Error: cannot show the welcome screen: {e}");
+                let _ = writeln!(
+                    err,
+                    "{}",
+                    error_line(format!("cannot show the welcome screen: {e}"), use_color())
+                );
                 return;
             }
         };
@@ -98,7 +102,11 @@ pub fn run(session: &mut Session) {
                     }
                     Ok(None) => continue,
                     Err(e) => {
-                        let _ = writeln!(err, "Error: cannot run the connect wizard: {e}");
+                        let _ = writeln!(
+                            err,
+                            "{}",
+                            error_line(format!("cannot run the connect wizard: {e}"), use_color())
+                        );
                         return;
                     }
                 }
