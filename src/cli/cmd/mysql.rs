@@ -56,6 +56,7 @@ impl ServerCmd for MySql {
             password_required: self.password,
             socket: self.socket.clone(),
             database: self.db.to_owned(),
+            vault: None,
         })
     }
 }

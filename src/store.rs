@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
 
+use crate::auth::vault::{SecretType, VaultConfig};
 use crate::client::psql::SslMode;
 use crate::client::{ConnectOptions, MySqlOptions, PsqlOptions};
 use crate::server::Server;
@@ -35,8 +36,22 @@ impl SavedConnection {
             ConnectOptions::Sqlite { path } => path
                 .as_deref()
                 .map_or_else(|| ":memory:".into(), crate::paths::collapse_home),
-            ConnectOptions::MySql(o) => format!("{}@{}:{}", o.user, o.host, o.port),
-            ConnectOptions::Psql(o) => format!("{}@{}:{}", o.user, o.host, o.port),
+            ConnectOptions::MySql(o) => {
+                format!(
+                    "{}@{}:{}",
+                    shown_user(&o.user, o.vault.as_ref()),
+                    o.host,
+                    o.port
+                )
+            }
+            ConnectOptions::Psql(o) => {
+                format!(
+                    "{}@{}:{}",
+                    shown_user(&o.user, o.vault.as_ref()),
+                    o.host,
+                    o.port
+                )
+            }
         }
     }
 
@@ -57,6 +72,7 @@ impl SavedConnection {
                 m.insert("socket".into(), json!(o.socket));
                 m.insert("password".into(), json!(o.password));
                 m.insert("password_required".into(), json!(o.password_required));
+                m.insert("vault".into(), vault_to_json(o.vault.as_ref()));
             }
             ConnectOptions::Psql(o) => {
                 m.insert("host".into(), json!(o.host));
@@ -67,6 +83,7 @@ impl SavedConnection {
                 m.insert("sslrootcert".into(), json!(o.sslrootcert));
                 m.insert("password".into(), json!(o.password));
                 m.insert("password_required".into(), json!(o.password_required));
+                m.insert("vault".into(), vault_to_json(o.vault.as_ref()));
             }
         }
         Value::Object(m)
@@ -93,6 +110,7 @@ impl SavedConnection {
                     password_required: flag("password_required"),
                     socket: text("socket"),
                     database: text("database"),
+                    vault: vault_from_json(v.get("vault")),
                 })
             }
             Server::PostgreSql => {
@@ -108,6 +126,7 @@ impl SavedConnection {
                         .and_then(|m| m.parse::<SslMode>().ok())
                         .unwrap_or(SslMode::Disable),
                     sslrootcert: text("sslrootcert"),
+                    vault: vault_from_json(v.get("vault")),
                 })
             }
         };
@@ -116,6 +135,50 @@ impl SavedConnection {
             opts,
             last_used: v.get("last_used").and_then(Value::as_u64).unwrap_or(0),
         })
+    }
+}
+
+/// Vault settings as stored; `null` when the password is used instead.
+fn vault_to_json(vault: Option<&VaultConfig>) -> Value {
+    let Some(c) = vault else {
+        return Value::Null;
+    };
+    json!({
+        "secret": c.secret,
+        "address": c.address,
+        "token_file": c.token_file,
+        "ca_cert": c.ca_cert,
+        "namespace": c.namespace,
+        "secret_type": c.secret_type.name(),
+        "username_key": c.username_key,
+        "password_key": c.password_key,
+    })
+}
+
+fn vault_from_json(v: Option<&Value>) -> Option<VaultConfig> {
+    let v = v.filter(|v| v.is_object())?;
+    let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    let d = VaultConfig::default();
+    Some(VaultConfig {
+        secret: text("secret").unwrap_or_default(),
+        address: text("address"),
+        token_file: text("token_file"),
+        ca_cert: text("ca_cert"),
+        namespace: text("namespace"),
+        secret_type: text("secret_type")
+            .and_then(|t| t.parse::<SecretType>().ok())
+            .unwrap_or(d.secret_type),
+        username_key: text("username_key").unwrap_or(d.username_key),
+        password_key: text("password_key").unwrap_or(d.password_key),
+    })
+}
+
+/// The user shown for a connection: `vault` when Vault provides it.
+fn shown_user<'a>(user: &'a str, vault: Option<&VaultConfig>) -> &'a str {
+    if user.is_empty() && vault.is_some() {
+        "vault"
+    } else {
+        user
     }
 }
 
@@ -149,8 +212,22 @@ pub fn prompt_detail(opts: &ConnectOptions) -> String {
                 _ => p.clone(),
             }
         }
-        ConnectOptions::MySql(o) => format!("{}@{}:{}", o.user, o.host, o.port),
-        ConnectOptions::Psql(o) => format!("{}@{}:{}", o.user, o.host, o.port),
+        ConnectOptions::MySql(o) => {
+            format!(
+                "{}@{}:{}",
+                shown_user(&o.user, o.vault.as_ref()),
+                o.host,
+                o.port
+            )
+        }
+        ConnectOptions::Psql(o) => {
+            format!(
+                "{}@{}:{}",
+                shown_user(&o.user, o.vault.as_ref()),
+                o.host,
+                o.port
+            )
+        }
     }
 }
 
@@ -344,6 +421,37 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn vault_settings_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("connections.json");
+        let vault = VaultConfig {
+            secret: "kv/data/shop".into(),
+            address: Some("https://vault:8200".into()),
+            token_file: Some("~/.dato/.vault-token".into()),
+            ca_cert: Some("/etc/ca.pem".into()),
+            namespace: None,
+            secret_type: SecretType::Kv2,
+            username_key: "user".into(),
+            password_key: "pass".into(),
+        };
+        let opts = ConnectOptions::Psql(PsqlOptions {
+            vault: Some(vault.clone()),
+            dbname: Some("shop".into()),
+            ..Default::default()
+        });
+        let mut s = Store::empty(Some(path.clone()));
+        s.remember("v", &opts, false, 1);
+        s.save().unwrap();
+        let loaded = Store::load(path).unwrap();
+        assert_eq!(loaded.items(), s.items());
+        let c = &loaded.items()[0];
+        assert!(matches!(&c.opts, ConnectOptions::Psql(o) if o.vault.as_ref() == Some(&vault)));
+        assert_eq!(c.detail(), "vault@localhost:5432");
+        assert_eq!(prompt_detail(&c.opts), "vault@localhost:5432");
+        assert_eq!(c.opts.needs_password(), None);
     }
 
     #[test]

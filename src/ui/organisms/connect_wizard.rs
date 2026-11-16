@@ -6,6 +6,7 @@ use nu_ansi_term::{Color, Style};
 use crate::client::ConnectOptions;
 use crate::server::Server;
 use crate::ui::atoms::{PasswordInput, PathInput, SelectList, TextInput};
+use crate::ui::form::{AUTH_PASSWORD, is_visible};
 use crate::ui::molecules::{Choice, FieldInput, LabeledField};
 use crate::ui::{ConnectForm, Field, FieldValues, Line, Step, Widget, server_color, server_title};
 
@@ -81,12 +82,13 @@ impl ConnectWizard {
             ..Field::text("name", "Connection name", "")
         });
         if has_password {
-            specs.push(Field::choice(
-                "save_password",
-                "Save password",
-                &["no", "yes"],
-                "no",
-            ));
+            let save = Field::choice("save_password", "Save password", &["no", "yes"], "no");
+            // Vault provides the password: there is none to save.
+            specs.push(if specs.iter().any(|s| s.key == "auth") {
+                save.when("auth", &[AUTH_PASSWORD])
+            } else {
+                save
+            });
         }
         let fields = specs.iter().map(field).collect();
         self.stage = Stage::Fields {
@@ -119,16 +121,26 @@ impl Widget for ConnectWizard {
             } => match fields[*current].on_key(key) {
                 Step::Cancel => Step::Cancel,
                 Step::Continue => Step::Continue,
-                Step::Done(_) if *current + 1 < fields.len() => {
-                    *current += 1;
-                    Step::Continue
-                }
                 Step::Done(_) => {
+                    let value = |j: usize| fields[j].value();
+                    let next = (*current + 1..fields.len()).find(|&j| is_visible(specs, &value, j));
+                    if let Some(next) = next {
+                        *current = next;
+                        return Step::Continue;
+                    }
+                    // Fields that were not asked for count as empty.
                     let values = FieldValues(
                         specs
                             .iter()
-                            .zip(fields.iter())
-                            .map(|(s, f)| (s.key, f.value()))
+                            .enumerate()
+                            .map(|(j, s)| {
+                                let v = if is_visible(specs, &value, j) {
+                                    value(j)
+                                } else {
+                                    String::new()
+                                };
+                                (s.key, v)
+                            })
                             .collect(),
                     );
                     match server.build(&values) {
@@ -193,16 +205,17 @@ impl ConnectWizard {
             }
             Stage::Fields {
                 server,
+                specs,
                 fields,
                 current,
-                ..
             } => {
+                let value = |j: usize| fields[j].value();
                 let mut out = vec![
                     Line::styled(title, format!("Connect to {server}")),
                     Line::styled(hint, "  Enter for next field, Esc to cancel"),
                 ];
                 for (i, f) in fields.iter().enumerate() {
-                    if i < *current {
+                    if i < *current && is_visible(specs, &value, i) {
                         out.push(f.render_done());
                     } else if i == *current {
                         out.extend(f.render());
@@ -268,8 +281,8 @@ mod tests {
         // host -> port
         feed(&mut w, [enter()]);
         assert!(screen(&w).contains("Port: 3306"));
-        // port -> user: type "app"
-        feed(&mut w, [enter(), ctrl('u')]);
+        // port -> authentication (password) -> user: type "app"
+        feed(&mut w, [enter(), enter(), ctrl('u')]);
         feed(&mut w, typed("app"));
         feed(&mut w, [enter()]);
         feed(&mut w, typed("secret"));
@@ -296,6 +309,7 @@ mod tests {
                     password_required: false,
                     socket: None,
                     database: Some("shop".into()),
+                    vault: None,
                 }),
                 name: Some("shopify".into()),
                 save_password: true,
@@ -311,7 +325,15 @@ mod tests {
         assert_eq!(
             feed(
                 &mut w,
-                [enter(), enter(), enter(), enter(), enter(), enter()]
+                [
+                    enter(),
+                    enter(),
+                    enter(),
+                    enter(),
+                    enter(),
+                    enter(),
+                    enter()
+                ]
             ),
             Step::Continue
         );
@@ -364,8 +386,8 @@ mod tests {
         assert!(s.contains("Host: localhost"), "{s}");
         feed(&mut w, [enter()]);
         assert!(screen(&w).contains("Port: 5432"));
-        // port -> user: type "app"
-        feed(&mut w, [enter(), ctrl('u')]);
+        // port -> authentication (password) -> user: type "app"
+        feed(&mut w, [enter(), enter(), ctrl('u')]);
         feed(&mut w, typed("app"));
         feed(&mut w, [enter()]);
         feed(&mut w, typed("secret"));
@@ -396,9 +418,69 @@ mod tests {
                     dbname: Some("shop".into()),
                     sslmode: SslMode::Disable,
                     sslrootcert: None,
+                    vault: None,
                 }),
                 name: None,
                 save_password: false,
+            })
+        );
+    }
+
+    #[test]
+    fn vault_replaces_user_and_password() {
+        use crate::auth::vault::{SecretType, VaultConfig};
+        let mut w = ConnectWizard::new();
+        // PostgreSQL; host, port; pick Vault.
+        feed(&mut w, [key(KeyCode::Down), key(KeyCode::Down), enter()]);
+        feed(&mut w, [enter(), enter(), key(KeyCode::Right)]);
+        assert!(screen(&w).contains("Authentication: ( ) password  (*) vault"));
+        feed(&mut w, [enter()]);
+        let s = screen(&w);
+        assert!(s.contains("Vault secret"), "{s}");
+        assert!(!s.contains("User:"), "{s}");
+        feed(&mut w, typed("kv/data/shop").into_iter().chain([enter()]));
+        feed(
+            &mut w,
+            typed("http://vault:8200").into_iter().chain([enter()]),
+        );
+        assert!(screen(&w).contains("Token file: ~/.dato/.vault-token"));
+        // token file, certificate, namespace
+        feed(&mut w, [enter(), enter(), enter()]);
+        // Secret type: kv2 asks for the keys.
+        feed(
+            &mut w,
+            [
+                key(KeyCode::Right),
+                key(KeyCode::Right),
+                key(KeyCode::Right),
+            ],
+        );
+        assert!(screen(&w).contains("(*) kv2"), "{}", screen(&w));
+        feed(&mut w, [enter()]);
+        assert!(screen(&w).contains("Username key: username"));
+        feed(&mut w, [enter(), enter()]);
+        // database, TLS mode, connection name; no "Save password".
+        feed(&mut w, typed("shop").into_iter().chain([enter(), enter()]));
+        let done = feed(&mut w, [enter()]);
+        assert!(!screen(&w).contains("Save password"), "{}", screen(&w));
+        let Step::Done(NewConnection {
+            opts: ConnectOptions::Psql(p),
+            save_password: false,
+            ..
+        }) = done
+        else {
+            panic!("{done:?}")
+        };
+        assert_eq!(p.dbname.as_deref(), Some("shop"));
+        assert_eq!(p.user, "");
+        assert_eq!(
+            p.vault,
+            Some(VaultConfig {
+                secret: "kv/data/shop".into(),
+                address: Some("http://vault:8200".into()),
+                token_file: Some("~/.dato/.vault-token".into()),
+                secret_type: SecretType::Kv2,
+                ..Default::default()
             })
         );
     }
@@ -408,8 +490,8 @@ mod tests {
         use crate::client::psql::SslMode;
         let mut w = ConnectWizard::new();
         feed(&mut w, [key(KeyCode::Down), key(KeyCode::Down), enter()]);
-        // host, port
-        feed(&mut w, [enter(), enter()]);
+        // host, port, authentication
+        feed(&mut w, [enter(), enter(), enter()]);
         feed(&mut w, typed("app"));
         // user, password, database
         feed(&mut w, [enter(), enter(), enter()]);

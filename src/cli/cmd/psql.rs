@@ -64,6 +64,7 @@ impl ServerCmd for PostgreSql {
             dbname: self.db.to_owned(),
             sslmode: self.sslmode,
             sslrootcert: self.sslrootcert.clone(),
+            vault: None,
         })
     }
 }

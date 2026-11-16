@@ -338,7 +338,7 @@ pub fn run(mut session: Session) -> i32 {
                             false
                         }
                         Output::Connect(opts) => {
-                            connect(&mut session, Some(opts), &mut stdout, &mut stderr);
+                            connect(&mut session, Some(*opts), &mut stdout, &mut stderr);
                             false
                         }
                         Output::Text(text) if page(&text) => false,

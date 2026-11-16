@@ -289,22 +289,24 @@ mod tests {
         assert_eq!(s.handle("\\connect"), vec![Output::ConnectWizard]);
         assert_eq!(
             s.handle("\\connect sqlite x.db"),
-            vec![Output::Connect(ConnectOptions::sqlite(Some("x.db")))]
+            vec![Output::Connect(Box::new(ConnectOptions::sqlite(Some(
+                "x.db"
+            ))))]
         );
         assert!(matches!(
             &s.handle("\\connect mysql -h db.local -u app -p shop")[0],
-            Output::Connect(ConnectOptions::MySql(o))
-                if o.host == "db.local" && o.password_required
+            Output::Connect(c) if matches!(&**c, ConnectOptions::MySql(o)
+                if o.host == "db.local" && o.password_required)
         ));
         assert!(matches!(
             &s.handle("\\connect psql -h db.local -U app -W -d shop")[0],
-            Output::Connect(ConnectOptions::Psql(o))
+            Output::Connect(c) if matches!(&**c, ConnectOptions::Psql(o)
                 if o.host == "db.local" && o.user == "app" && o.password_required
-                    && o.dbname.as_deref() == Some("shop")
+                    && o.dbname.as_deref() == Some("shop"))
         ));
         assert!(matches!(
             &s.handle("\\connect PSQL -U app")[0],
-            Output::Connect(ConnectOptions::Psql(_))
+            Output::Connect(c) if matches!(**c, ConnectOptions::Psql(_))
         ));
         // Another server's flag is rejected.
         assert!(matches!(
