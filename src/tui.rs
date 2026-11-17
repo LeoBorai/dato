@@ -21,7 +21,7 @@ use crate::store::default_name;
 use crate::ui::organisms::{ConnectWizard, NewConnection, Pager, too_wide};
 use crate::ui::{server_color, server_title, term};
 use nu_ansi_term::{Color, Style};
-use session::{Output, PromptInfo, Session};
+use session::{Output, PromptInfo, Session, Target};
 use std::time::Duration;
 
 /// Marks the end of the connection name; takes the server's color.
@@ -157,6 +157,48 @@ pub fn error_line(message: impl std::fmt::Display, color: bool) -> String {
     }
 }
 
+/// `<icon> <verb> <name> (<detail>)<end>` in `style`: the name in bold, the
+/// detail in italics. Plain text when `color` is off.
+fn target_line(
+    style: Style,
+    icon: &str,
+    verb: &str,
+    target: &Target,
+    end: &str,
+    color: bool,
+) -> String {
+    let detail = (!target.detail.is_empty()).then_some(target.detail.as_str());
+    if !color {
+        let detail = detail.map(|d| format!(" ({d})")).unwrap_or_default();
+        return format!("{icon}{verb} {}{detail}{end}", target.name);
+    }
+    let mut line = style.paint(format!("{icon}{verb} ")).to_string();
+    line += &style.bold().paint(&target.name).to_string();
+    if let Some(d) = detail {
+        line += &style.paint(" (").to_string();
+        line += &style.italic().paint(d).to_string();
+        line += &style.paint(")").to_string();
+    }
+    line + &style.paint(end).to_string()
+}
+
+/// `✓ Connected to name (detail).` in green.
+pub fn connected_line(target: &Target, color: bool) -> String {
+    let style = Style::new().fg(Color::Green);
+    target_line(style, "✓ ", "Connected to", target, ".", color)
+}
+
+/// `⚠ Disconnected from name (detail).` in yellow.
+pub fn disconnected_line(target: &Target, color: bool) -> String {
+    let style = Style::new().fg(Color::Yellow);
+    target_line(style, "⚠ ", "Disconnected from", target, ".", color)
+}
+
+/// `Reconnecting to name (detail)...` in gray.
+pub fn reconnecting_line(target: &Target, color: bool) -> String {
+    target_line(dim(), "", "Reconnecting to", target, "...", color)
+}
+
 /// Prints outputs: text and status to stdout, errors to stderr.
 /// Returns `true` when a quit was requested.
 pub fn emit(outputs: &[Output], out: &mut dyn Write, err: &mut dyn Write, colors: Colors) -> bool {
@@ -175,6 +217,12 @@ pub fn emit(outputs: &[Output], out: &mut dyn Write, err: &mut dyn Write, colors
                 } else {
                     let _ = writeln!(out, "{s}");
                 }
+            }
+            Output::Disconnected(t) => {
+                let _ = writeln!(out, "{}", disconnected_line(t, colors.stdout));
+            }
+            Output::Reconnecting(t) => {
+                let _ = writeln!(out, "{}", reconnecting_line(t, colors.stdout));
             }
             Output::Error(e) => {
                 let _ = writeln!(err, "{}", error_line(e, colors.stderr));
@@ -231,12 +279,9 @@ fn establish(
             if let Some(name) = name {
                 session.set_connection_name(name);
             }
-            let _ = writeln!(
-                out,
-                "Connected to {} ({}).",
-                session.prompt_label(),
-                opts.server()
-            );
+            if let Some(target) = session.target() {
+                let _ = writeln!(out, "{}", connected_line(&target, Colors::detect().stdout));
+            }
             true
         }
         Err(e) => {
@@ -382,6 +427,30 @@ mod tests {
         assert!(quit);
         assert_eq!(String::from_utf8(out).unwrap(), "a\n1 row in set\n");
         assert_eq!(String::from_utf8(err).unwrap(), "⚠ Error: boom\n");
+    }
+
+    #[test]
+    fn connection_lines_share_one_layout() {
+        let t = Target {
+            name: "shop".into(),
+            detail: "app@db:5432".into(),
+        };
+        assert_eq!(
+            connected_line(&t, false),
+            "✓ Connected to shop (app@db:5432)."
+        );
+        assert_eq!(
+            disconnected_line(&t, false),
+            "⚠ Disconnected from shop (app@db:5432)."
+        );
+        assert_eq!(
+            reconnecting_line(&t, false),
+            "Reconnecting to shop (app@db:5432)..."
+        );
+        let green = connected_line(&t, true);
+        assert!(green.contains("\x1b[32m"), "{green:?}");
+        assert!(green.contains("\x1b[1;32mshop"), "{green:?}");
+        assert!(green.contains("\x1b[3;32mapp@db:5432"), "{green:?}");
     }
 
     #[test]

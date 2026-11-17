@@ -97,6 +97,8 @@ A successful connect replaces the current connection; a failed one keeps it.
 | `\d [table]`, `describe` | Describe a table's columns |
 | `\T [format]` | Show or set the output format |
 | `\connect [server [args]]` | Connect to a database; without arguments, choose interactively |
+| `\disconnect` | Close the current connection |
+| `\reconnect` | Reopen the last connection |
 | `<sql>\G` | Run a query in vertical format |
 | `help`, `\?` | List commands |
 | `quit`, `exit`, `\q` | Leave the shell |

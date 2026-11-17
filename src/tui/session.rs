@@ -81,6 +81,10 @@ pub enum Output {
     Status(String),
     /// Error message, for stderr.
     Error(String),
+    /// `\\disconnect` closed this connection; for stdout (`⚠`, yellow).
+    Disconnected(Target),
+    /// `\\reconnect` is about to reopen this connection; for stdout (gray).
+    Reconnecting(Target),
     /// The user asked to leave the shell.
     Quit,
     /// `\\connect` without arguments: the shell should run the connect wizard.
@@ -88,6 +92,14 @@ pub enum Output {
     /// `\\connect <server> <args>`: the shell should connect with these options
     /// (asking for the password first when the options require it).
     Connect(Box<ConnectOptions>),
+}
+
+/// A connection as the user knows it: its name and, in parentheses, where it
+/// points (`user@host:port` or the SQLite file).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    pub name: String,
+    pub detail: String,
 }
 
 /// Returned when a command or query needs a connection and there is none.
@@ -122,6 +134,9 @@ pub struct Session {
     /// `user@host:port` or the SQLite file, shown after the name.
     connection_detail: String,
     last_elapsed: Option<Duration>,
+    /// Options of the last successful `connect`, kept across `\\disconnect`
+    /// so `\\reconnect` can reopen it.
+    last_options: Option<ConnectOptions>,
 }
 
 pub fn status_line(result: &StatementResult, elapsed: Duration) -> String {
@@ -157,6 +172,7 @@ impl Session {
             connection_name: None,
             connection_detail: String::new(),
             last_elapsed: None,
+            last_options: None,
         }
     }
 
@@ -165,10 +181,42 @@ impl Session {
     pub fn connect(&mut self, opts: &ConnectOptions) -> Result<(), ClientError> {
         let client = db::open(opts)?;
         self.replace_client(client);
-        self.connection_name = Some(default_name(opts));
+        // Reconnecting to the same target keeps its name.
+        if self.last_options.as_ref() != Some(opts) || self.connection_name.is_none() {
+            self.connection_name = Some(default_name(opts));
+        }
+        self.last_options = Some(opts.clone());
         self.connection_detail = prompt_detail(opts);
         self.last_elapsed = None;
         Ok(())
+    }
+
+    /// Closes the connection, leaving the session disconnected. Returns whether
+    /// there was one. The last options are kept for `\\reconnect`.
+    pub fn disconnect(&mut self) -> bool {
+        let was = self.client.take().is_some();
+        *self.dialect.write().unwrap() = Server::Sqlite;
+        self.last_elapsed = None;
+        self.refresh_schema();
+        was
+    }
+
+    /// The current connection, or the last one while disconnected.
+    pub fn target(&self) -> Option<Target> {
+        let name = self
+            .connection_name
+            .clone()
+            .or_else(|| self.client.as_ref().map(|c| c.prompt_label()))
+            .or_else(|| self.last_options.as_ref().map(default_name))?;
+        Some(Target {
+            name,
+            detail: self.connection_detail.clone(),
+        })
+    }
+
+    /// Options of the last successful connect, if any.
+    pub fn last_options(&self) -> Option<&ConnectOptions> {
+        self.last_options.as_ref()
     }
 
     /// Names the current connection in the prompt.

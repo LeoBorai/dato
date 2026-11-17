@@ -6,7 +6,7 @@ use crate::client::{ClientError, ResultSet, Value};
 use crate::connect::split_words;
 use crate::render::Format;
 use crate::server::Server;
-use crate::tui::session::{Output, Session};
+use crate::tui::session::{NotConnected, Output, Session};
 
 /// The session's client, or return a not-connected error from the handler.
 macro_rules! client {
@@ -143,6 +143,32 @@ pub fn connect(_s: &mut Session, arg: Option<&str>) -> Vec<Output> {
         Err(e) if e.kind() == ErrorKind::DisplayHelp => vec![Output::Text(e.to_string())],
         Err(e) => vec![Output::Error(e.to_string().trim_end().to_string())],
     }
+}
+
+/// `\\disconnect` closes the connection and keeps the shell open.
+pub fn disconnect(s: &mut Session, _arg: Option<&str>) -> Vec<Output> {
+    let target = s.target();
+    if !s.disconnect() {
+        return vec![Output::Error(NotConnected.to_string())];
+    }
+    match target {
+        Some(t) => vec![Output::Disconnected(t)],
+        None => vec![Output::Text("Disconnected.\n".to_string())],
+    }
+}
+
+/// `\\reconnect` reopens the last connection with its options. The shell
+/// performs the actual connection.
+pub fn reconnect(s: &mut Session, _arg: Option<&str>) -> Vec<Output> {
+    let (Some(opts), Some(target)) = (s.last_options(), s.target()) else {
+        return vec![Output::Error(
+            "no previous connection; use \\connect".to_string(),
+        )];
+    };
+    vec![
+        Output::Reconnecting(target),
+        Output::Connect(Box::new(opts.clone())),
+    ]
 }
 
 pub fn help(_s: &mut Session, _arg: Option<&str>) -> Vec<Output> {
