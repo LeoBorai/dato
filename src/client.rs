@@ -17,7 +17,10 @@ use crate::server::Server;
 
 pub use mysql::MySqlOptions;
 pub use psql::PsqlOptions;
-pub use value::{ColumnInfo, Relation, RelationKind, ResultSet, StatementResult, Value};
+pub use value::{
+    Check, ColumnInfo, Constraints, ForeignKey, Relation, RelationKind, ResultSet, StatementResult,
+    Value,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -62,6 +65,8 @@ pub trait Client: Send {
     fn schema(&mut self, table: Option<&str>) -> Result<Vec<String>, ClientError>;
     fn databases(&mut self) -> Result<ResultSet, ClientError>;
     fn columns(&mut self, table: &str) -> Result<Vec<ColumnInfo>, ClientError>;
+    /// `CHECK` constraints and foreign keys of one table.
+    fn constraints(&mut self, table: &str) -> Result<Constraints, ClientError>;
     fn interrupt_handle(&self) -> Arc<dyn Interrupt>;
     /// Identifies the connection in the prompt. Read on every prompt, so it may
     /// change during the session (e.g. after MySQL `USE`).

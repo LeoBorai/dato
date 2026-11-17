@@ -95,6 +95,7 @@ A successful connect replaces the current connection; a failed one keeps it.
 | `.indexes [table]`, `\di` | List indexes |
 | `.databases`, `\l` | List databases (SQLite: attached; MySQL: schemas; PostgreSQL: databases) |
 | `\d [table]`, `describe` | Describe a table's columns |
+| `\structure` | Show every table and view with columns, nullability, checks, defaults and foreign keys |
 | `\T [format]` | Show or set the output format |
 | `\connect [server [args]]` | Connect to a database; without arguments, choose interactively |
 | `\disconnect` | Close the current connection |

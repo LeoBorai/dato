@@ -17,8 +17,8 @@ use postgres::{CancelToken, Config, NoTls, SimpleQueryMessage};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use super::{
-    Client, ClientError, ColumnInfo, Interrupt, Relation, RelationKind, ResultSet, StatementResult,
-    Value,
+    Check, Client, ClientError, ColumnInfo, Constraints, ForeignKey, Interrupt, Relation,
+    RelationKind, ResultSet, StatementResult, Value,
 };
 use crate::dialect;
 use crate::server::Server;
@@ -526,6 +526,47 @@ impl Client for PsqlClient {
             &[&oid],
         )?;
         Ok(rows.iter().map(|r| column_info(r)).collect())
+    }
+
+    fn constraints(&mut self, table: &str) -> Result<Constraints, ClientError> {
+        let (oid, ..) = self.find_relation(table)?;
+        let checks = self.text_rows(
+            "SELECT CASE WHEN cardinality(c.conkey) = 1 THEN \
+                 (SELECT a.attname::text FROM pg_attribute a \
+                   WHERE a.attrelid = c.conrelid AND a.attnum = c.conkey[1]) END, \
+               pg_get_expr(c.conbin, c.conrelid) \
+             FROM pg_constraint c \
+             WHERE c.conrelid = $1::text::oid AND c.contype = 'c' ORDER BY c.conname",
+            &[&oid],
+        )?;
+        let fks = self.text_rows(
+            "SELECT a.attname::text, c.confrelid::regclass::text, fa.attname::text \
+             FROM pg_constraint c \
+             CROSS JOIN LATERAL unnest(c.conkey, c.confkey) WITH ORDINALITY AS k(src, dst, ord) \
+             JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.src \
+             JOIN pg_attribute fa ON fa.attrelid = c.confrelid AND fa.attnum = k.dst \
+             WHERE c.conrelid = $1::text::oid AND c.contype = 'f' \
+             ORDER BY c.conname, k.ord",
+            &[&oid],
+        )?;
+        let s = |v: &Option<String>| v.clone().unwrap_or_default();
+        Ok(Constraints {
+            checks: checks
+                .iter()
+                .map(|r| Check {
+                    column: r[0].clone(),
+                    expr: s(&r[1]),
+                })
+                .collect(),
+            foreign_keys: fks
+                .iter()
+                .map(|r| ForeignKey {
+                    column: s(&r[0]),
+                    ref_table: s(&r[1]),
+                    ref_column: s(&r[2]),
+                })
+                .collect(),
+        })
     }
 
     /// All tables and views on the search path with their columns, in one query.
