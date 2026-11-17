@@ -3,6 +3,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::auth::vault::VaultConfig;
+
 /// How the connection uses TLS, named as libpq's `sslmode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SslMode {
@@ -81,6 +83,9 @@ pub struct PsqlOptions {
     pub sslmode: SslMode,
     /// Certificate file trusted by `verify-full`, instead of the system roots.
     pub sslrootcert: Option<String>,
+    /// Get the user name and password from Vault when connecting, instead of
+    /// `user` and `password`.
+    pub vault: Option<VaultConfig>,
 }
 
 impl Default for PsqlOptions {
@@ -94,6 +99,7 @@ impl Default for PsqlOptions {
             dbname: None,
             sslmode: SslMode::default(),
             sslrootcert: None,
+            vault: None,
         }
     }
 }

@@ -10,6 +10,7 @@ pub mod psql;
 pub mod sqlite;
 pub mod value;
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::server::Server;
@@ -142,10 +143,12 @@ impl ConnectOptions {
         match self {
             ConnectOptions::Sqlite { .. } => None,
             ConnectOptions::MySql(o) => {
-                (o.password_required && o.password.is_none()).then_some("Enter password: ")
+                (o.vault.is_none() && o.password_required && o.password.is_none())
+                    .then_some("Enter password: ")
             }
             ConnectOptions::Psql(o) => {
-                (o.password_required && o.password.is_none()).then_some("Password: ")
+                (o.vault.is_none() && o.password_required && o.password.is_none())
+                    .then_some("Password: ")
             }
         }
     }
@@ -176,6 +179,8 @@ pub trait Connector {
 
 impl Connector for Server {
     fn open(&self, opts: &ConnectOptions) -> Result<Box<dyn Client>, ClientError> {
+        let resolved = with_vault_credentials(opts)?;
+        let opts: &ConnectOptions = &resolved;
         match (self, opts) {
             (Server::Sqlite, ConnectOptions::Sqlite { path }) => {
                 Ok(Box::new(sqlite::SqliteClient::open(path.as_deref())?))
@@ -188,6 +193,31 @@ impl Connector for Server {
             ))),
         }
     }
+}
+
+/// When `opts` get their credentials from Vault, a copy with the user name and
+/// password read from Vault; otherwise `opts` unchanged.
+fn with_vault_credentials(opts: &ConnectOptions) -> Result<Cow<'_, ConnectOptions>, ClientError> {
+    let vault = match opts {
+        ConnectOptions::Sqlite { .. } => None,
+        ConnectOptions::MySql(o) => o.vault.as_ref(),
+        ConnectOptions::Psql(o) => o.vault.as_ref(),
+    };
+    let Some(vault) = vault else {
+        return Ok(Cow::Borrowed(opts));
+    };
+    let creds = vault
+        .fetch()
+        .map_err(|e| ClientError::Open(e.to_string()))?;
+    let mut opts = opts.clone();
+    let (user, password) = match &mut opts {
+        ConnectOptions::Sqlite { .. } => unreachable!("SQLite has no Vault settings"),
+        ConnectOptions::MySql(o) => (&mut o.user, &mut o.password),
+        ConnectOptions::Psql(o) => (&mut o.user, &mut o.password),
+    };
+    *user = creds.username;
+    *password = Some(creds.password);
+    Ok(Cow::Owned(opts))
 }
 
 /// Opens a client for `opts` with the server the options belong to.
@@ -253,6 +283,26 @@ mod tests {
         o.set_password("x".into());
         assert_eq!(o.needs_password(), None);
         assert_eq!(ConnectOptions::sqlite(None).needs_password(), None);
+    }
+
+    #[test]
+    fn vault_never_asks_for_a_password() {
+        let o = ConnectOptions::Psql(PsqlOptions {
+            password_required: true,
+            vault: Some(crate::auth::vault::VaultConfig::default()),
+            ..Default::default()
+        });
+        assert_eq!(o.needs_password(), None);
+    }
+
+    #[test]
+    fn vault_errors_fail_the_connect() {
+        let o = ConnectOptions::MySql(MySqlOptions {
+            vault: Some(crate::auth::vault::VaultConfig::default()),
+            ..Default::default()
+        });
+        let err = open(&o).err().unwrap();
+        assert_eq!(err.to_string(), "Vault secret not defined");
     }
 
     #[test]

@@ -39,6 +39,7 @@ fn options_from_url(url: &str) -> MySqlOptions {
         password_required: false,
         socket: None,
         database,
+        vault: None,
     }
 }
 

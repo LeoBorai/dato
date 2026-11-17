@@ -87,7 +87,7 @@ pub enum Output {
     ConnectWizard,
     /// `\\connect <server> <args>`: the shell should connect with these options
     /// (asking for the password first when the options require it).
-    Connect(ConnectOptions),
+    Connect(Box<ConnectOptions>),
 }
 
 /// Returned when a command or query needs a connection and there is none.

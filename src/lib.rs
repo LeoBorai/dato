@@ -3,6 +3,7 @@
 //! The crate is split into backend-agnostic building blocks (`editor`, `render`,
 //! `special`, `tui`) and per-server clients under `client`.
 
+pub mod auth;
 pub mod cli;
 pub mod client;
 pub mod connect;

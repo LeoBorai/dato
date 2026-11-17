@@ -1,5 +1,7 @@
 //! MySQL login parameters.
 
+use crate::auth::vault::VaultConfig;
+
 /// From `dato mysql`, `\connect mysql` or the wizard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MySqlOptions {
@@ -11,6 +13,9 @@ pub struct MySqlOptions {
     pub password_required: bool,
     pub socket: Option<String>,
     pub database: Option<String>,
+    /// Get the user name and password from Vault when connecting, instead of
+    /// `user` and `password`.
+    pub vault: Option<VaultConfig>,
 }
 
 impl Default for MySqlOptions {
@@ -23,6 +28,7 @@ impl Default for MySqlOptions {
             password_required: false,
             socket: None,
             database: None,
+            vault: None,
         }
     }
 }

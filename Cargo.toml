@@ -36,6 +36,7 @@ tempfile = "3"
 thiserror = "2"
 tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring"] }
 unicode-width = "0.2"
+ureq = { version = "3.5", default-features = false, features = ["rustls-no-provider"] }
 
 [dev-dependencies]
 assert_cmd = "2"

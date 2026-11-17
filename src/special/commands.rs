@@ -139,7 +139,7 @@ pub fn connect(_s: &mut Session, arg: Option<&str>) -> Vec<Output> {
         ))];
     };
     match server.parse_args(rest) {
-        Ok(opts) => vec![Output::Connect(opts)],
+        Ok(opts) => vec![Output::Connect(Box::new(opts))],
         Err(e) if e.kind() == ErrorKind::DisplayHelp => vec![Output::Text(e.to_string())],
         Err(e) => vec![Output::Error(e.to_string().trim_end().to_string())],
     }
