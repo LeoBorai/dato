@@ -59,6 +59,13 @@ pub static COMMANDS: &[SpecialCommand] = &[
         run: commands::describe,
     },
     SpecialCommand {
+        names: &["\\structure"],
+        syntax: "\\structure",
+        help: "Show every table and view with its columns, checks, defaults and foreign keys.",
+        needs_connection: true,
+        run: commands::structure,
+    },
+    SpecialCommand {
         names: &["\\T"],
         syntax: "\\T [format]",
         help: "Set the output format; without argument, show it.",
@@ -263,6 +270,30 @@ mod tests {
         assert!(text(&s.handle("\\d")).contains("orders"));
         let out = s.handle("\\d nope");
         assert!(matches!(&out[0], Output::Error(e) if e.contains("no such table")));
+    }
+
+    #[test]
+    fn structure_shows_constraints() {
+        let mut s = session();
+        s.handle(
+            "create table parent(id integer primary key); \
+             create table child(id integer primary key, \
+               age integer not null default 18 check (age >= 0), \
+               pid integer references parent(id), \
+               lo integer, hi integer, check (lo < hi)); \
+             create view v as select id from parent;",
+        );
+        let t = text(&s.handle("\\structure"));
+        assert!(t.contains("child") && t.contains("parent"), "{t}");
+        assert!(t.contains("\nv\n"), "{t}");
+        assert!(t.contains("age >= 0"), "{t}");
+        assert!(t.contains("parent(id)"), "{t}");
+        assert!(t.contains("CHECK lo < hi"), "{t}");
+        assert!(
+            t.contains("nullable") && t.contains("No") && t.contains("Yes"),
+            "{t}"
+        );
+        assert!(t.contains("18"), "{t}");
     }
 
     #[test]

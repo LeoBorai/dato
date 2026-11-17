@@ -102,6 +102,121 @@ pub fn describe(s: &mut Session, arg: Option<&str>) -> Vec<Output> {
     }
 }
 
+/// `\\structure`: every table and view with its columns, checks, defaults and foreign keys.
+pub fn structure(s: &mut Session, _arg: Option<&str>) -> Vec<Output> {
+    let client = client!(s);
+    let mut blocks = Vec::new();
+    // `tables()` lists views and materialized views too.
+    let tables = match client.tables(None) {
+        Ok(t) => t,
+        Err(e) => return fail(e),
+    };
+    if tables.is_empty() {
+        return vec![Output::Text("No tables.\n".into())];
+    }
+    for table in tables {
+        let (cols, cons) = match (client.columns(&table), client.constraints(&table)) {
+            (Ok(c), Ok(k)) => (c, k),
+            (Err(e), _) | (_, Err(e)) => return fail(e),
+        };
+        blocks.push((table, cols, cons));
+    }
+    let mut out = Vec::new();
+    for (table, cols, cons) in blocks {
+        let (rs, table_checks) = structure_rows(&cols, &cons);
+        let mut text = format!("{table}\n{}", s.render(&rs));
+        for expr in table_checks {
+            text.push_str(&format!("CHECK {expr}\n"));
+        }
+        out.push(Output::Text(text));
+    }
+    out
+}
+
+/// Whether `expr` mentions `name` as a whole identifier, quoted or not.
+fn mentions(expr: &str, name: &str) -> bool {
+    let is_id = |c: char| c.is_alphanumeric() || c == '_';
+    let mut from = 0;
+    while let Some(pos) = expr[from..].find(name) {
+        let at = from + pos;
+        let end = at + name.len();
+        if !expr[..at].ends_with(is_id) && !expr[end..].starts_with(is_id) {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// Rows for one table, and the checks that belong to no single column.
+fn structure_rows(
+    cols: &[crate::client::ColumnInfo],
+    cons: &crate::client::Constraints,
+) -> (ResultSet, Vec<String>) {
+    let mut per_column: Vec<Vec<&str>> = vec![Vec::new(); cols.len()];
+    let mut table_checks = Vec::new();
+    for check in &cons.checks {
+        let owner = match &check.column {
+            Some(c) => cols.iter().position(|x| &x.name == c),
+            None => {
+                let hits: Vec<usize> = (0..cols.len())
+                    .filter(|&i| mentions(&check.expr, &cols[i].name))
+                    .collect();
+                if let [one] = hits[..] {
+                    Some(one)
+                } else {
+                    None
+                }
+            }
+        };
+        match owner {
+            Some(i) => per_column[i].push(&check.expr),
+            None => table_checks.push(check.expr.clone()),
+        }
+    }
+    let rows = cols
+        .iter()
+        .zip(&per_column)
+        .map(|(c, checks)| {
+            let fks: Vec<String> = cons
+                .foreign_keys
+                .iter()
+                .filter(|f| f.column == c.name)
+                .map(|f| format!("{}({})", f.ref_table, f.ref_column))
+                .collect();
+            let joined = |v: Vec<String>| {
+                if v.is_empty() {
+                    Value::Null
+                } else {
+                    Value::Text(v.join("; "))
+                }
+            };
+            vec![
+                Value::Text(c.name.clone()),
+                Value::Text(c.type_name.clone()),
+                Value::Text(if c.not_null { "No" } else { "Yes" }.into()),
+                joined(checks.iter().map(|e| e.to_string()).collect()),
+                c.default.clone().map_or(Value::Null, Value::Text),
+                joined(fks),
+            ]
+        })
+        .collect();
+    let rs = ResultSet {
+        columns: [
+            "column",
+            "type",
+            "nullable",
+            "check",
+            "default",
+            "foreign_key",
+        ]
+        .map(String::from)
+        .to_vec(),
+        rows,
+    };
+    (rs, table_checks)
+}
+
 pub fn table_format(s: &mut Session, arg: Option<&str>) -> Vec<Output> {
     match arg {
         None => vec![Output::Text(format!(

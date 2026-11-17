@@ -13,8 +13,8 @@ use mysql::prelude::Queryable;
 use mysql::{Conn, Opts, OptsBuilder, Params, Row};
 
 use super::{
-    Client, ClientError, ColumnInfo, Interrupt, Relation, RelationKind, ResultSet, StatementResult,
-    Value,
+    Check, Client, ClientError, ColumnInfo, Constraints, ForeignKey, Interrupt, Relation,
+    RelationKind, ResultSet, StatementResult, Value,
 };
 use crate::dialect;
 use crate::server::Server;
@@ -305,6 +305,50 @@ impl Client for MySqlClient {
             Params::Positional(vec![table.into()]),
         )?;
         Ok(rs.rows.iter().map(|r| column_info(&r[0..5])).collect())
+    }
+
+    fn constraints(&mut self, table: &str) -> Result<Constraints, ClientError> {
+        let checks = self.query_set(
+            "SELECT cc.CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS cc \
+             JOIN information_schema.TABLE_CONSTRAINTS tc \
+               ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA \
+              AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME \
+             WHERE tc.TABLE_SCHEMA = DATABASE() AND tc.TABLE_NAME = ? \
+               AND tc.CONSTRAINT_TYPE = 'CHECK' ORDER BY cc.CONSTRAINT_NAME",
+            Params::Positional(vec![table.into()]),
+        );
+        // Servers without `CHECK_CONSTRAINTS` have no checks to show.
+        let checks = checks
+            .map(|rs| {
+                rs.rows
+                    .iter()
+                    .map(|r| Check {
+                        column: None,
+                        expr: text(&r[0]),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let fks = self.query_set(
+            "SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME \
+             FROM information_schema.KEY_COLUMN_USAGE \
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? \
+               AND REFERENCED_TABLE_NAME IS NOT NULL \
+             ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION",
+            Params::Positional(vec![table.into()]),
+        )?;
+        Ok(Constraints {
+            checks,
+            foreign_keys: fks
+                .rows
+                .iter()
+                .map(|r| ForeignKey {
+                    column: text(&r[0]),
+                    ref_table: text(&r[1]),
+                    ref_column: text(&r[2]),
+                })
+                .collect(),
+        })
     }
 
     /// All tables and views of the current database with their columns, in one query.

@@ -62,3 +62,25 @@ pub struct ColumnInfo {
     pub default: Option<String>,
     pub primary_key: bool,
 }
+
+/// A `CHECK` constraint. `column` is set when the server ties it to one column.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Check {
+    pub column: Option<String>,
+    pub expr: String,
+}
+
+/// One column of a foreign key and the column it references.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForeignKey {
+    pub column: String,
+    pub ref_table: String,
+    pub ref_column: String,
+}
+
+/// Constraints of a table that [`ColumnInfo`] does not carry.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Constraints {
+    pub checks: Vec<Check>,
+    pub foreign_keys: Vec<ForeignKey>,
+}

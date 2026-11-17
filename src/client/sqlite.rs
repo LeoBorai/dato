@@ -4,7 +4,10 @@ use std::sync::Arc;
 
 use rusqlite::{Connection, ErrorCode, InterruptHandle, types::ValueRef};
 
-use super::{Client, ClientError, ColumnInfo, Interrupt, ResultSet, StatementResult, Value};
+use super::{
+    Check, Client, ClientError, ColumnInfo, Constraints, ForeignKey, Interrupt, ResultSet,
+    StatementResult, Value,
+};
 use crate::sql::split_statements;
 
 pub struct SqliteClient {
@@ -212,6 +215,33 @@ impl Client for SqliteClient {
             .collect())
     }
 
+    fn constraints(&mut self, table: &str) -> Result<Constraints, ClientError> {
+        let fks = self.query_set(
+            "SELECT \"from\", \"table\", \"to\" FROM pragma_foreign_key_list(?1) ORDER BY id, seq",
+            &[&table],
+        )?;
+        let sql = self.names(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            &[&table],
+        )?;
+        let text = |v: &Value| match v {
+            Value::Text(t) => t.clone(),
+            _ => String::new(),
+        };
+        Ok(Constraints {
+            checks: sql.first().map(|s| parse_checks(s)).unwrap_or_default(),
+            foreign_keys: fks
+                .rows
+                .iter()
+                .map(|r| ForeignKey {
+                    column: text(&r[0]),
+                    ref_table: text(&r[1]),
+                    ref_column: text(&r[2]),
+                })
+                .collect(),
+        })
+    }
+
     fn interrupt_handle(&self) -> Arc<dyn Interrupt> {
         Arc::new(SqliteInterrupt(self.conn.get_interrupt_handle()))
     }
@@ -219,6 +249,109 @@ impl Client for SqliteClient {
     fn prompt_label(&self) -> String {
         self.name.clone()
     }
+}
+
+/// Splits `s` at top-level commas, ignoring commas inside parentheses and quotes.
+fn split_top_level(s: &str) -> Vec<&str> {
+    let (mut parts, mut depth, mut start) = (Vec::new(), 0usize, 0);
+    let mut quote: Option<char> = None;
+    for (i, c) in s.char_indices() {
+        match quote {
+            Some(q) => {
+                if c == q || (q == '[' && c == ']') {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '\'' | '"' | '`' | '[' => quote = Some(c),
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => {
+                    parts.push(&s[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            },
+        }
+    }
+    parts.push(&s[start..]);
+    parts
+}
+
+/// The balanced `( ... )` group at the start of `s`, without the parentheses.
+fn paren_group(s: &str) -> Option<&str> {
+    let s = s.trim_start();
+    if !s.starts_with('(') {
+        return None;
+    }
+    let (mut depth, mut quote) = (0usize, None::<char>);
+    for (i, c) in s.char_indices() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '\'' | '"' | '`' => quote = Some(c),
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(s[1..i].trim());
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+    None
+}
+
+/// Finds `CHECK (...)` clauses in a `CREATE TABLE` statement. A check inside a
+/// column definition is tied to that column; a table-level one is not.
+fn parse_checks(create_sql: &str) -> Vec<Check> {
+    let (Some(open), Some(close)) = (create_sql.find('('), create_sql.rfind(')')) else {
+        return Vec::new();
+    };
+    if close <= open {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for item in split_top_level(&create_sql[open + 1..close]) {
+        let item = item.trim();
+        let upper = item.to_ascii_uppercase();
+        let table_level = ["CHECK", "CONSTRAINT", "PRIMARY", "UNIQUE", "FOREIGN"]
+            .iter()
+            .any(|k| {
+                upper.starts_with(k)
+                    && !upper[k.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+            });
+        let column = if table_level {
+            None
+        } else {
+            let name = item.split_whitespace().next().unwrap_or("");
+            Some(
+                name.trim_matches(|c| matches!(c, '"' | '`' | '[' | ']' | '\''))
+                    .to_string(),
+            )
+        };
+        let mut from = 0;
+        // Every `CHECK` keyword in the item, not inside a string.
+        while let Some(pos) = upper[from..].find("CHECK") {
+            let at = from + pos;
+            from = at + 5;
+            let before_ok =
+                at == 0 || !upper[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_');
+            if before_ok && let Some(expr) = paren_group(&item[at + 5..]) {
+                out.push(Check {
+                    column: column.clone(),
+                    expr: expr.to_string(),
+                });
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
