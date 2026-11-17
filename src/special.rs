@@ -73,6 +73,20 @@ pub static COMMANDS: &[SpecialCommand] = &[
         run: commands::connect,
     },
     SpecialCommand {
+        names: &["\\disconnect"],
+        syntax: "\\disconnect",
+        help: "Close the current connection.",
+        needs_connection: false,
+        run: commands::disconnect,
+    },
+    SpecialCommand {
+        names: &["\\reconnect"],
+        syntax: "\\reconnect",
+        help: "Reopen the last connection.",
+        needs_connection: false,
+        run: commands::reconnect,
+    },
+    SpecialCommand {
         names: &["help", "\\?", ".help"],
         syntax: "help",
         help: "Show this help.",
@@ -148,6 +162,7 @@ mod tests {
     use super::*;
     use crate::client::sqlite::SqliteClient;
     use crate::render::Format;
+    use crate::tui::session::Target;
 
     fn session() -> Session {
         Session::new(Box::new(SqliteClient::open_memory()), Format::Ascii, false)
@@ -280,6 +295,36 @@ mod tests {
             );
         }
         assert_eq!(s.handle("quit"), vec![Output::Quit]);
+    }
+
+    #[test]
+    fn disconnect_and_reconnect() {
+        use crate::client::ConnectOptions;
+        let mut s = Session::disconnected(Format::Ascii, false);
+        assert!(matches!(&s.handle("\\disconnect")[0], Output::Error(_)));
+        assert!(matches!(&s.handle("\\reconnect")[0], Output::Error(_)));
+        let opts = ConnectOptions::sqlite(None);
+        s.connect(&opts).unwrap();
+        assert!(s.is_connected());
+        assert_eq!(
+            s.handle("\\disconnect"),
+            vec![Output::Disconnected(Target {
+                name: "memory".into(),
+                detail: ":memory:".into()
+            })]
+        );
+        assert!(!s.is_connected());
+        assert!(matches!(&s.handle("select 1")[0], Output::Error(_)));
+        assert_eq!(
+            s.handle("\\reconnect"),
+            vec![
+                Output::Reconnecting(Target {
+                    name: "memory".into(),
+                    detail: ":memory:".into()
+                }),
+                Output::Connect(Box::new(opts))
+            ]
+        );
     }
 
     #[test]
