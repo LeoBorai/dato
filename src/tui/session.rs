@@ -120,6 +120,9 @@ pub struct PromptInfo {
     pub server: Option<Server>,
     /// How long the last statement took.
     pub took: Option<Duration>,
+    /// The connection was closed with `\\disconnect`; `name` and `detail` are
+    /// the ones it had.
+    pub disconnected: bool,
 }
 
 pub struct Session {
@@ -227,6 +230,14 @@ impl Session {
     /// What the prompt's first line shows.
     pub fn prompt_info(&self) -> PromptInfo {
         let Some(client) = &self.client else {
+            // After `\\disconnect` the prompt keeps naming the old connection.
+            if let (Some(_), Some(t)) = (&self.last_options, self.target()) {
+                return PromptInfo {
+                    name: t.name,
+                    disconnected: true,
+                    ..Default::default()
+                };
+            }
             return PromptInfo {
                 name: DISCONNECTED_LABEL.to_string(),
                 ..Default::default()
@@ -241,6 +252,7 @@ impl Session {
             database: client.database(),
             server: Some(client.server()),
             took: self.last_elapsed,
+            disconnected: false,
         }
     }
 
@@ -488,6 +500,20 @@ mod tests {
             .map(|c| c.name.as_str())
             .collect();
         assert_eq!(names, vec!["id", "note"]);
+    }
+
+    #[test]
+    fn prompt_keeps_the_name_after_disconnect() {
+        let mut s = session(false);
+        s.connect(&ConnectOptions::sqlite(None)).unwrap();
+        s.set_connection_name("shop".into());
+        s.disconnect();
+        let info = s.prompt_info();
+        assert_eq!(info.name, "shop");
+        assert_eq!(info.detail, None);
+        assert!(info.disconnected && info.server.is_none());
+        s.connect(&ConnectOptions::sqlite(None)).unwrap();
+        assert!(!s.prompt_info().disconnected);
     }
 
     #[test]

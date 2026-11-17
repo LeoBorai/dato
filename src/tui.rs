@@ -48,7 +48,8 @@ fn format_took(d: Duration) -> String {
 }
 
 impl SqlPrompt {
-    /// The prompt's own line, like `shopify ✱ app@localhost:5432 on shop via ● PostgreSQL took 2s`.
+    /// The prompt's own line, like `shopify ✱ app@localhost:5432 on shop via ● PostgreSQL took 2s`,
+    /// or `shopify ⚠ Disconnected` after `\\disconnect`.
     /// The ✱ and ● take the server's color. The input goes on the next line,
     /// after the indicator.
     fn left(&self) -> String {
@@ -56,20 +57,34 @@ impl SqlPrompt {
         let dim = dim();
         let accent = i.server.map(|s| Style::new().bold().fg(server_color(s)));
         let mut out = Style::new().bold().paint(&i.name).to_string();
+
         if let Some(detail) = &i.detail {
             let divider = accent.map_or(DIVIDER.to_string(), |a| a.paint(DIVIDER).to_string());
             out += &format!(" {divider} {detail}");
         }
+
+        if i.disconnected {
+            let yellow = Style::new().fg(Color::Yellow);
+            out += &format!(
+                " {} {}",
+                yellow.paint("⚠"),
+                yellow.underline().paint("Disconnected")
+            );
+        }
+
         if let Some(db) = &i.database {
             out += &format!(" {} {db}", dim.paint("on"));
         }
+
         if let Some(server) = i.server {
             let dot = Style::new().fg(server_color(server)).paint("●");
             out += &format!(" {} {dot} {}", dim.paint("via"), server_title(server));
         }
+
         if let Some(took) = i.took.filter(|t| *t >= SLOW) {
             out += &format!(" {} {}", dim.paint("took"), format_took(took));
         }
+
         out.push('\n');
         out
     }
@@ -512,7 +527,20 @@ mod tests {
             database: Some("shop".into()),
             server: Some(Server::PostgreSql),
             took: Some(Duration::from_millis(2400)),
+            disconnected: false,
         }
+    }
+
+    #[test]
+    fn disconnected_prompt_names_the_old_connection() {
+        let info = PromptInfo {
+            name: "Patrimonio Nacional Web".into(),
+            disconnected: true,
+            ..Default::default()
+        };
+        let left = SqlPrompt { info }.left();
+        assert_eq!(plain(&left), "Patrimonio Nacional Web ⚠ Disconnected\n");
+        assert!(left.contains("\x1b[4;33mDisconnected"), "{left:?}");
     }
 
     #[test]
