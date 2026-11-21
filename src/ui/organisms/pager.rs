@@ -13,6 +13,20 @@ pub fn too_wide(text: &str, columns: usize) -> bool {
         .any(|l| crate::ui::atoms::visible_width(l) > columns)
 }
 
+/// Whether `text` has more lines than fit above the status line and prompt.
+pub fn too_tall(text: &str, rows: usize) -> bool {
+    text.lines().count() > rows.saturating_sub(2)
+}
+
+/// Lines of a boxed table that stay pinned: top border, header, separator.
+const TABLE_HEAD: usize = 3;
+
+fn is_boxed_table(text: &str) -> bool {
+    let mut lines = text.lines();
+    lines.next().is_some_and(|l| l.starts_with('┌'))
+        && lines.nth(1).is_some_and(|l| l.starts_with('╞'))
+}
+
 pub struct Pager {
     view: Viewport,
 }
@@ -25,9 +39,11 @@ impl Pager {
         let width = columns.saturating_sub(1).max(1);
         let lines = text.lines().count();
         let height = lines.min(rows.saturating_sub(2)).max(1);
-        Self {
-            view: Viewport::new(text, width, height),
+        let mut view = Viewport::new(text, width, height);
+        if is_boxed_table(text) {
+            view = view.pin(TABLE_HEAD);
         }
+        Self { view }
     }
 
     fn status(&self) -> Line {
@@ -94,6 +110,26 @@ mod tests {
         feed(&mut p, [key(KeyCode::Right)]);
         assert_eq!(p.render()[1].text(), " bbbb | ccc");
         assert_eq!(feed(&mut p, [key(KeyCode::Char('q'))]), Step::Done(()));
+    }
+
+    #[test]
+    fn tall_check() {
+        let text = "a\nb\nc";
+        assert!(too_tall(text, 4));
+        assert!(!too_tall(text, 5));
+    }
+
+    #[test]
+    fn table_header_stays_pinned() {
+        let mut text = String::from("┌──┐\n│ n│\n╞══╡\n");
+        for i in 0..20 {
+            text.push_str(&format!("│{i:>2}│\n"));
+        }
+        let mut p = Pager::new(&text, 20, 8);
+        feed(&mut p, [key(KeyCode::PageDown)]);
+        let lines: Vec<_> = p.render().iter().map(Line::text).collect();
+        assert_eq!(&lines[..3], ["┌──┐", "│ n│", "╞══╡"]);
+        assert!(lines[3].starts_with("│ 3"), "{lines:?}");
     }
 
     #[test]

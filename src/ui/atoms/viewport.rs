@@ -18,9 +18,11 @@ pub struct Viewport {
     height: usize,
     /// First visible display column.
     left: usize,
-    /// First visible line.
+    /// First visible body line (lines after the pinned ones).
     top: usize,
     content_width: usize,
+    /// Leading lines that stay on screen while the body scrolls.
+    pinned: usize,
 }
 
 /// Splits `s` into SGR escape sequences (`\x1b[...m`, zero width) and characters.
@@ -104,7 +106,23 @@ impl Viewport {
             left: 0,
             top: 0,
             content_width,
+            pinned: 0,
         }
+    }
+
+    /// Keeps the first `n` lines on screen while the rest scrolls.
+    pub fn pin(mut self, n: usize) -> Self {
+        self.pinned = n.min(self.lines.len());
+        self
+    }
+
+    /// Lines available to the scrolling body.
+    fn body_height(&self) -> usize {
+        self.height.saturating_sub(self.pinned).max(1)
+    }
+
+    fn body_len(&self) -> usize {
+        self.lines.len() - self.pinned
     }
 
     fn max_left(&self) -> usize {
@@ -112,7 +130,7 @@ impl Viewport {
     }
 
     fn max_top(&self) -> usize {
-        self.lines.len().saturating_sub(self.height)
+        self.body_len().saturating_sub(self.body_height())
     }
 
     /// `(first column, last column, total columns)`, 1-based, for a status line.
@@ -121,10 +139,10 @@ impl Viewport {
         (self.left + 1, last, self.content_width)
     }
 
-    /// `(first line, last line, total lines)`, 1-based.
+    /// `(first line, last line, total lines)` of the scrolling body, 1-based.
     pub fn rows(&self) -> (usize, usize, usize) {
-        let last = (self.top + self.height).min(self.lines.len());
-        (self.top + 1, last, self.lines.len())
+        let last = (self.top + self.body_height()).min(self.body_len());
+        (self.top + 1, last, self.body_len())
     }
 
     pub fn can_scroll_horizontally(&self) -> bool {
@@ -156,9 +174,9 @@ impl Widget for Viewport {
             KeyCode::Down | KeyCode::Char('j') => self.top = (self.top + 1).min(self.max_top()),
             KeyCode::Up | KeyCode::Char('k') => self.top = self.top.saturating_sub(1),
             KeyCode::PageDown | KeyCode::Char(' ') => {
-                self.top = (self.top + self.height).min(self.max_top())
+                self.top = (self.top + self.body_height()).min(self.max_top())
             }
-            KeyCode::PageUp => self.top = self.top.saturating_sub(self.height),
+            KeyCode::PageUp => self.top = self.top.saturating_sub(self.body_height()),
             KeyCode::Char('g') => self.top = 0,
             KeyCode::Char('G') => self.top = self.max_top(),
             _ => {}
@@ -167,10 +185,9 @@ impl Widget for Viewport {
     }
 
     fn render(&self) -> Vec<Line> {
-        self.lines
-            .iter()
-            .skip(self.top)
-            .take(self.height)
+        let (head, body) = self.lines.split_at(self.pinned);
+        head.iter()
+            .chain(body.iter().skip(self.top).take(self.body_height()))
             .map(|l| Line::plain(clip(l, self.left, self.width)))
             .collect()
     }
@@ -247,6 +264,19 @@ mod tests {
         assert_eq!(v.rows(), (8, 10, 10));
         feed(&mut v, [key(KeyCode::Char('g'))]);
         assert_eq!(v.rows(), (1, 3, 10));
+    }
+
+    #[test]
+    fn pinned_lines_stay_while_scrolling() {
+        let text = "H1\nH2\na\nb\nc\nd";
+        let mut v = Viewport::new(text, 5, 4).pin(2);
+        assert_eq!(shown(&v), ["H1", "H2", "a", "b"]);
+        feed(
+            &mut v,
+            [key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down)],
+        );
+        assert_eq!(shown(&v), ["H1", "H2", "c", "d"]);
+        assert_eq!(v.rows(), (3, 4, 4));
     }
 
     #[test]
