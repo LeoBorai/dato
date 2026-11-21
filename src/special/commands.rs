@@ -26,6 +26,7 @@ fn name_list(column: &str, names: Vec<String>) -> ResultSet {
     ResultSet {
         columns: vec![column.to_string()],
         rows: names.into_iter().map(|n| vec![Value::Text(n)]).collect(),
+        ..Default::default()
     }
 }
 
@@ -95,6 +96,7 @@ pub fn describe(s: &mut Session, arg: Option<&str>) -> Vec<Output> {
                         ]
                     })
                     .collect(),
+                ..Default::default()
             };
             vec![Output::Text(s.render(&rs))]
         }
@@ -213,6 +215,7 @@ fn structure_rows(
         .map(String::from)
         .to_vec(),
         rows,
+        ..Default::default()
     };
     (rs, table_checks)
 }

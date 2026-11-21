@@ -3,14 +3,14 @@
 
 use crossterm::event::KeyEvent;
 use nu_ansi_term::{Color, Style};
-use unicode_width::UnicodeWidthStr;
 
 use crate::ui::atoms::Viewport;
 use crate::ui::{Line, Step, Widget};
 
 /// Whether `text` has a line wider than `columns` terminal cells.
 pub fn too_wide(text: &str, columns: usize) -> bool {
-    text.lines().any(|l| l.width() > columns)
+    text.lines()
+        .any(|l| crate::ui::atoms::visible_width(l) > columns)
 }
 
 pub struct Pager {

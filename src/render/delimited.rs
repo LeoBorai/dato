@@ -41,6 +41,7 @@ mod tests {
         let r = ResultSet {
             columns: vec!["a".into(), "b".into()],
             rows: vec![vec![Value::Text("say \"hi\", ok".into()), Value::Null]],
+            ..Default::default()
         };
         assert_eq!(
             render_to_string(&r, Format::Csv),
@@ -53,6 +54,7 @@ mod tests {
         let r = ResultSet {
             columns: vec!["a".into(), "b".into()],
             rows: vec![vec![Value::Integer(1), Value::Text("x".into())]],
+            ..Default::default()
         };
         assert_eq!(render_to_string(&r, Format::Csv), "a,b\n1,x\n");
     }
@@ -62,6 +64,7 @@ mod tests {
         let r = ResultSet {
             columns: vec!["d".into()],
             rows: vec![vec![Value::Numeric("1.10".into())]],
+            ..Default::default()
         };
         assert_eq!(render_to_string(&r, Format::Csv), "d\n1.10\n");
         assert_eq!(render_to_string(&r, Format::Tsv), "d\n1.10\n");
@@ -72,6 +75,7 @@ mod tests {
         let r = ResultSet {
             columns: vec!["a".into()],
             rows: vec![vec![Value::Text("x\ty\nz".into())]],
+            ..Default::default()
         };
         assert_eq!(render_to_string(&r, Format::Tsv), "a\nx\\ty\\nz\n");
     }

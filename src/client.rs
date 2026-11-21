@@ -18,8 +18,8 @@ use crate::server::Server;
 pub use mysql::MySqlOptions;
 pub use psql::PsqlOptions;
 pub use value::{
-    Check, ColumnInfo, Constraints, ForeignKey, Relation, RelationKind, ResultSet, StatementResult,
-    Value,
+    Check, ColumnInfo, ColumnMeta, Constraints, ForeignKey, Relation, RelationKind, ResultSet,
+    StatementResult, Value,
 };
 
 #[derive(Debug, thiserror::Error)]

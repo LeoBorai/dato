@@ -149,6 +149,11 @@ pub fn run() -> ExitCode {
         }
     };
     let mut session = Session::disconnected(format, interactive);
+    session.set_colors(
+        crate::settings::Settings::load_or_init().colors
+            && io::stdout().is_terminal()
+            && tui::no_color_unset(),
+    );
     match opts {
         None if !interactive => {
             eprintln!("{}", tui::error_line(TARGET_REQUIRED, tui::use_color()));

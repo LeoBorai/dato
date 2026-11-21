@@ -28,7 +28,7 @@ nu-ansi-term = "0.50"
 postgres = "0.19"
 reedline = "~0.53"
 rpassword = "7.5.5"
-rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled", "column_decltype", "column_metadata"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }

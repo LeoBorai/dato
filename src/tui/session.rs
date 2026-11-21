@@ -9,7 +9,7 @@ use super::interrupt;
 use crate::client::{self as db, Client, ClientError, ConnectOptions, ResultSet, StatementResult};
 pub use crate::client::{Relation, RelationKind};
 use crate::dialect::{Dialect, Qualifier};
-use crate::render::{Format, render_to_string};
+use crate::render::{Format, render_to_string_with};
 use crate::server::Server;
 use crate::store::{default_name, prompt_detail};
 use crate::{special, sql};
@@ -129,6 +129,8 @@ pub struct Session {
     client: Option<Box<dyn Client>>,
     pub(crate) format: Format,
     show_status: bool,
+    /// Paint result tables (settings, terminal and `NO_COLOR` decide).
+    colors: bool,
     schema: Arc<RwLock<SchemaCache>>,
     /// Server whose dialect the editor uses; SQLite while disconnected.
     dialect: Arc<RwLock<Server>>,
@@ -170,6 +172,7 @@ impl Session {
             client: None,
             format,
             show_status,
+            colors: false,
             schema: Arc::default(),
             dialect: Arc::new(RwLock::new(Server::Sqlite)),
             connection_name: None,
@@ -290,6 +293,10 @@ impl Session {
         Arc::clone(&self.schema)
     }
 
+    pub fn set_colors(&mut self, on: bool) {
+        self.colors = on;
+    }
+
     pub fn format(&self) -> Format {
         self.format
     }
@@ -301,7 +308,7 @@ impl Session {
     }
 
     pub fn render(&self, rs: &ResultSet) -> String {
-        render_to_string(rs, self.format)
+        render_to_string_with(rs, self.format, self.colors)
     }
 
     pub fn refresh_schema(&mut self) {
@@ -370,7 +377,11 @@ impl Session {
                                 } else {
                                     self.format
                                 };
-                                outputs.push(Output::Text(render_to_string(rs, fmt)));
+                                outputs.push(Output::Text(render_to_string_with(
+                                    rs,
+                                    fmt,
+                                    self.colors,
+                                )));
                             }
                             StatementResult::Affected(_) => {}
                         }

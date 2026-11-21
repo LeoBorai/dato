@@ -27,6 +27,11 @@ pub fn connections_file() -> Option<PathBuf> {
     app_dir().map(|d| d.join("connections.json"))
 }
 
+/// User settings: `~/.dato/settings.toml`.
+pub fn settings_file() -> Option<PathBuf> {
+    app_dir().map(|d| d.join("settings.toml"))
+}
+
 /// Buffer the external editor opens for Ctrl-O: `~/.dato/edit.sql`.
 pub fn edit_buffer() -> Option<PathBuf> {
     app_dir().map(|d| d.join("edit.sql"))

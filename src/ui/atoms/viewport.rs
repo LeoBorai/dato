@@ -23,13 +23,52 @@ pub struct Viewport {
     content_width: usize,
 }
 
+/// Splits `s` into SGR escape sequences (`\x1b[...m`, zero width) and characters.
+fn tokens(s: &str) -> impl Iterator<Item = (bool, &str)> {
+    let mut rest = s;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        if rest.starts_with("\x1b[")
+            && let Some(end) = rest.find('m')
+        {
+            let (esc, tail) = rest.split_at(end + 1);
+            rest = tail;
+            return Some((true, esc));
+        }
+        let n = rest.chars().next().map_or(0, char::len_utf8);
+        let (ch, tail) = rest.split_at(n);
+        rest = tail;
+        Some((false, ch))
+    })
+}
+
+/// Display width of `s`, not counting color escapes.
+pub fn visible_width(s: &str) -> usize {
+    tokens(s)
+        .filter(|(esc, _)| !esc)
+        .map(|(_, t)| t.width())
+        .sum()
+}
+
 /// The cells `[left, left + width)` of `s`. A wide character cut by either edge
-/// is replaced by spaces so columns stay aligned.
+/// is replaced by spaces so columns stay aligned. Color escapes are kept (they
+/// take no cells) and a reset closes the line, so colors never leak.
 pub fn clip(s: &str, left: usize, width: usize) -> String {
     let mut out = String::new();
     let mut col = 0;
+    let mut colored = false;
     let end = left + width;
-    for c in s.chars() {
+    for (esc, t) in tokens(s) {
+        if esc {
+            if col < end {
+                out.push_str(t);
+                colored = true;
+            }
+            continue;
+        }
+        let c = t.chars().next().unwrap_or(' ');
         let w = c.width().unwrap_or(0);
         let (start, stop) = (col, col + w);
         col = stop;
@@ -47,6 +86,9 @@ pub fn clip(s: &str, left: usize, width: usize) -> String {
             out.push(c);
         }
     }
+    if colored {
+        out.push_str("\x1b[0m");
+    }
     out
 }
 
@@ -54,7 +96,7 @@ impl Viewport {
     /// A `width` x `height` window over `text`, at the top-left corner.
     pub fn new(text: &str, width: usize, height: usize) -> Self {
         let lines: Vec<String> = text.lines().map(str::to_string).collect();
-        let content_width = lines.iter().map(|l| l.width()).max().unwrap_or(0);
+        let content_width = lines.iter().map(|l| visible_width(l)).max().unwrap_or(0);
         Self {
             lines,
             width: width.max(1),
@@ -141,6 +183,15 @@ mod tests {
 
     fn shown(v: &Viewport) -> Vec<String> {
         v.render().iter().map(Line::text).collect()
+    }
+
+    #[test]
+    fn clip_ignores_color_escapes() {
+        let s = "\x1b[32mabcdef\x1b[0m|";
+        assert_eq!(visible_width(s), 7);
+        assert_eq!(clip(s, 2, 3), "\x1b[32mcde\x1b[0m");
+        assert_eq!(clip(s, 0, 100), format!("{s}\x1b[0m"));
+        assert_eq!(clip("plain", 1, 2), "la");
     }
 
     #[test]
