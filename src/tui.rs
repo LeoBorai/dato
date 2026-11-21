@@ -135,7 +135,7 @@ pub fn use_color() -> bool {
     std::io::stderr().is_terminal() && no_color_unset()
 }
 
-fn no_color_unset() -> bool {
+pub fn no_color_unset() -> bool {
     std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
 }
 

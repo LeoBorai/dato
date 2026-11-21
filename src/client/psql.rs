@@ -13,12 +13,13 @@ use std::time::Duration;
 
 use postgres::config::SslMode as DriverSslMode;
 use postgres::error::SqlState;
+use postgres::types::Type;
 use postgres::{CancelToken, Config, NoTls, SimpleQueryMessage};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use super::{
-    Check, Client, ClientError, ColumnInfo, Constraints, ForeignKey, Interrupt, Relation,
-    RelationKind, ResultSet, StatementResult, Value,
+    Check, Client, ClientError, ColumnInfo, ColumnMeta, Constraints, ForeignKey, Interrupt,
+    Relation, RelationKind, ResultSet, StatementResult, Value,
 };
 use crate::dialect;
 use crate::server::Server;
@@ -189,6 +190,46 @@ impl PsqlClient {
         })
     }
 
+    /// Type name, primary-key membership and boolean-ness of result columns;
+    /// `sources` is each column's `(table oid, attribute number)`.
+    fn column_meta(
+        &mut self,
+        types: &[Type],
+        sources: &[(Option<u32>, Option<i16>)],
+    ) -> Vec<ColumnMeta> {
+        let mut keys: std::collections::HashMap<u32, Vec<i16>> = Default::default();
+        types
+            .iter()
+            .zip(sources)
+            .map(|(ty, (oid, attnum))| {
+                let primary_key = match (oid, attnum) {
+                    (Some(oid), Some(n)) if *oid != 0 => keys
+                        .entry(*oid)
+                        .or_insert_with(|| self.primary_key_attnums(*oid))
+                        .contains(n),
+                    _ => false,
+                };
+                ColumnMeta {
+                    type_name: Some(ty.name().to_string()),
+                    primary_key,
+                    boolean: *ty == Type::BOOL,
+                }
+            })
+            .collect()
+    }
+
+    fn primary_key_attnums(&mut self, oid: u32) -> Vec<i16> {
+        self.client
+            .query(
+                "SELECT a.attnum FROM pg_index i \
+                 JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey) \
+                 WHERE i.indisprimary AND i.indrelid = $1",
+                &[&oid],
+            )
+            .map(|rows| rows.iter().map(|r| r.get::<_, i16>(0)).collect())
+            .unwrap_or_default()
+    }
+
     /// Runs one statement: its column types first, then its rows as text.
     fn run_one(&mut self, stmt: &str) -> Result<StatementResult, postgres::Error> {
         let prepared = self.client.prepare(stmt)?;
@@ -202,7 +243,18 @@ impl PsqlClient {
             .iter()
             .map(|c| c.name().to_string())
             .collect();
+        let sources: Vec<(Option<u32>, Option<i16>)> = prepared
+            .columns()
+            .iter()
+            .map(|c| (c.table_oid(), c.column_id()))
+            .collect();
+        let types: Vec<Type> = prepared
+            .columns()
+            .iter()
+            .map(|c| c.type_().clone())
+            .collect();
         drop(prepared);
+        let meta = self.column_meta(&types, &sources);
 
         let mut rows = Vec::new();
         let mut affected = 0;
@@ -222,7 +274,11 @@ impl PsqlClient {
         Ok(if columns.is_empty() {
             StatementResult::Affected(affected)
         } else {
-            StatementResult::Rows(ResultSet { columns, rows })
+            StatementResult::Rows(ResultSet {
+                columns,
+                rows,
+                meta,
+            })
         })
     }
 

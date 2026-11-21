@@ -13,8 +13,8 @@ use mysql::prelude::Queryable;
 use mysql::{Conn, Opts, OptsBuilder, Params, Row};
 
 use super::{
-    Check, Client, ClientError, ColumnInfo, Constraints, ForeignKey, Interrupt, Relation,
-    RelationKind, ResultSet, StatementResult, Value,
+    Check, Client, ClientError, ColumnInfo, ColumnMeta, Constraints, ForeignKey, Interrupt,
+    Relation, RelationKind, ResultSet, StatementResult, Value,
 };
 use crate::dialect;
 use crate::server::Server;
@@ -82,6 +82,33 @@ fn row_values(row: Row) -> Vec<Value> {
         .zip(kinds)
         .map(|(v, k)| value::convert(k, v))
         .collect()
+}
+
+/// Type name, primary-key flag and boolean-ness (`TINYINT(1)`, MySQL's
+/// `BOOLEAN`) of a result column.
+fn column_meta(c: &mysql::Column) -> ColumnMeta {
+    use mysql::consts::{ColumnFlags, ColumnType as T};
+    let ty = c.column_type();
+    let boolean = ty == T::MYSQL_TYPE_TINY && c.column_length() == 1;
+    let name = match ty {
+        T::MYSQL_TYPE_TINY if boolean => "tinyint(1)".to_string(),
+        T::MYSQL_TYPE_TINY => "tinyint".into(),
+        T::MYSQL_TYPE_SHORT => "smallint".into(),
+        T::MYSQL_TYPE_INT24 => "mediumint".into(),
+        T::MYSQL_TYPE_LONG => "int".into(),
+        T::MYSQL_TYPE_LONGLONG => "bigint".into(),
+        T::MYSQL_TYPE_DECIMAL | T::MYSQL_TYPE_NEWDECIMAL => "decimal".into(),
+        T::MYSQL_TYPE_VAR_STRING | T::MYSQL_TYPE_VARCHAR => "varchar".into(),
+        T::MYSQL_TYPE_STRING => "char".into(),
+        other => format!("{other:?}")
+            .trim_start_matches("MYSQL_TYPE_")
+            .to_ascii_lowercase(),
+    };
+    ColumnMeta {
+        type_name: Some(name),
+        primary_key: c.flags().contains(ColumnFlags::PRI_KEY_FLAG),
+        boolean,
+    }
 }
 
 fn text(v: &Value) -> String {
@@ -178,11 +205,16 @@ impl MySqlClient {
                 out.push(StatementResult::Affected(set.affected_rows()));
                 continue;
             }
+            let meta = set.columns().as_ref().iter().map(column_meta).collect();
             let mut rows = Vec::new();
             for row in set {
                 rows.push(row_values(row?));
             }
-            out.push(StatementResult::Rows(ResultSet { columns, rows }));
+            out.push(StatementResult::Rows(ResultSet {
+                columns,
+                rows,
+                meta,
+            }));
         }
         Ok(out)
     }
@@ -197,6 +229,7 @@ impl MySqlClient {
                 .iter()
                 .map(|c| c.name_str().into_owned())
                 .collect();
+            rs.meta = set.columns().as_ref().iter().map(column_meta).collect();
             for row in set {
                 rs.rows.push(row_values(row.map_err(err)?));
             }

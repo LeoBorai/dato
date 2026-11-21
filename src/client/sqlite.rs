@@ -5,8 +5,8 @@ use std::sync::Arc;
 use rusqlite::{Connection, ErrorCode, InterruptHandle, types::ValueRef};
 
 use super::{
-    Check, Client, ClientError, ColumnInfo, Constraints, ForeignKey, Interrupt, ResultSet,
-    StatementResult, Value,
+    Check, Client, ClientError, ColumnInfo, ColumnMeta, Constraints, ForeignKey, Interrupt,
+    ResultSet, StatementResult, Value,
 };
 use crate::sql::split_statements;
 
@@ -80,6 +80,7 @@ impl SqliteClient {
             return Ok(StatementResult::Affected(n as u64));
         }
         let columns: Vec<String> = stmt.column_names().map(|c| c.to_string()).collect();
+        let meta = self.column_meta(&stmt);
         let mut rows = stmt.query([])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
@@ -89,7 +90,67 @@ impl SqliteClient {
             }
             out.push(vals);
         }
-        Ok(StatementResult::Rows(ResultSet { columns, rows: out }))
+        Ok(StatementResult::Rows(ResultSet {
+            columns,
+            rows: out,
+            meta,
+        }))
+    }
+
+    /// Declared type and primary-key membership of each result column.
+    fn column_meta(&self, stmt: &rusqlite::Statement<'_>) -> Vec<ColumnMeta> {
+        let mut keys: std::collections::HashMap<String, Vec<String>> = Default::default();
+        let origins: Vec<_> = stmt
+            .columns_with_metadata()
+            .map(|m| {
+                (
+                    m.table_name().map(String::from),
+                    m.origin_name().map(String::from),
+                )
+            })
+            .collect();
+        stmt.columns()
+            .zip(origins)
+            .map(|(c, (table, origin))| {
+                let primary_key = match (table.as_deref(), origin.as_deref()) {
+                    (Some(t), Some(o)) => keys
+                        .entry(t.to_string())
+                        .or_insert_with(|| self.primary_key_columns(t))
+                        .iter()
+                        .any(|k| k.eq_ignore_ascii_case(o)),
+                    _ => false,
+                };
+                let type_name = c
+                    .decl_type()
+                    .filter(|t| !t.is_empty())
+                    .map(|t| t.to_ascii_lowercase());
+                let boolean = type_name
+                    .as_deref()
+                    .is_some_and(|t| t == "boolean" || t == "bool");
+                ColumnMeta {
+                    type_name,
+                    primary_key,
+                    boolean,
+                }
+            })
+            .collect()
+    }
+
+    fn primary_key_columns(&self, table: &str) -> Vec<String> {
+        self.query_set(
+            "SELECT name FROM pragma_table_info(?1) WHERE pk > 0",
+            &[&table],
+        )
+        .map(|rs| {
+            rs.rows
+                .into_iter()
+                .filter_map(|mut r| match r.pop() {
+                    Some(Value::Text(t)) => Some(t),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
     fn query_set(
@@ -110,7 +171,11 @@ impl SqliteClient {
                         .collect::<Result<_, _>>()?,
                 );
             }
-            Ok(ResultSet { columns, rows: out })
+            Ok(ResultSet {
+                columns,
+                rows: out,
+                ..Default::default()
+            })
         };
         run().map_err(|e| convert(e, Vec::new()))
     }

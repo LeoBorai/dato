@@ -17,10 +17,23 @@ impl Value {
     }
 }
 
+/// What the server reports about a result column, for rendering.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ColumnMeta {
+    /// Declared type as the server names it; `None` when unknown (expressions).
+    pub type_name: Option<String>,
+    /// The column belongs to its table's primary key.
+    pub primary_key: bool,
+    /// The column holds booleans; values keep the engine's own display.
+    pub boolean: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ResultSet {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Value>>,
+    /// One entry per column, or empty when the source has no type information.
+    pub meta: Vec<ColumnMeta>,
 }
 
 impl ResultSet {
@@ -28,6 +41,7 @@ impl ResultSet {
         Self {
             columns: columns.iter().map(|c| c.to_string()).collect(),
             rows: Vec::new(),
+            meta: Vec::new(),
         }
     }
 }

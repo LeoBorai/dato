@@ -38,6 +38,7 @@ mod tests {
         let r = ResultSet {
             columns: vec!["id".into(), "name".into()],
             rows: vec![vec![Value::Integer(1), Value::Text("x".into())]],
+            ..Default::default()
         };
         let s = render_to_string(&r, Format::Vertical);
         assert!(s.contains("1. row"));

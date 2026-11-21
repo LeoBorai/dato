@@ -60,8 +60,19 @@ impl FromStr for Format {
 }
 
 pub fn render(rs: &ResultSet, format: Format, out: &mut dyn Write) -> io::Result<()> {
+    render_with(rs, format, false, out)
+}
+
+/// Like [`render`]; `colors` paints the `ascii` table (other formats stay plain).
+pub fn render_with(
+    rs: &ResultSet,
+    format: Format,
+    colors: bool,
+    out: &mut dyn Write,
+) -> io::Result<()> {
     match format {
-        Format::Ascii | Format::Psql | Format::Markdown => table::render(rs, format, out),
+        Format::Ascii => table::render_ascii(rs, colors, out),
+        Format::Psql | Format::Markdown => table::render(rs, format, out),
         Format::Csv => delimited::render(rs, ',', out),
         Format::Tsv => delimited::render(rs, '\t', out),
         Format::Json => json::render(rs, out),
@@ -70,8 +81,12 @@ pub fn render(rs: &ResultSet, format: Format, out: &mut dyn Write) -> io::Result
 }
 
 pub fn render_to_string(rs: &ResultSet, format: Format) -> String {
+    render_to_string_with(rs, format, false)
+}
+
+pub fn render_to_string_with(rs: &ResultSet, format: Format, colors: bool) -> String {
     let mut buf = Vec::new();
-    render(rs, format, &mut buf).expect("writing to a Vec cannot fail");
+    render_with(rs, format, colors, &mut buf).expect("writing to a Vec cannot fail");
     String::from_utf8_lossy(&buf).into_owned()
 }
 
@@ -108,6 +123,7 @@ mod tests {
         ResultSet {
             columns: vec!["n".into()],
             rows: vec![vec![Value::Integer(1)], vec![Value::Integer(22)]],
+            ..Default::default()
         }
     }
 

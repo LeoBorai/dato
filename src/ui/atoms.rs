@@ -10,4 +10,4 @@ pub use password_input::PasswordInput;
 pub use path_input::PathInput;
 pub use select_list::SelectList;
 pub use text_input::TextInput;
-pub use viewport::Viewport;
+pub use viewport::{Viewport, visible_width};

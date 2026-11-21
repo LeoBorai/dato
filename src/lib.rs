@@ -12,6 +12,7 @@ pub mod editor;
 pub mod paths;
 pub mod render;
 pub mod server;
+pub mod settings;
 pub mod special;
 pub mod sql;
 pub mod store;

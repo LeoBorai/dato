@@ -51,6 +51,7 @@ mod tests {
                 Value::Real(2.5),
                 Value::Blob(vec![1, 2]),
             ]],
+            ..Default::default()
         };
         assert_eq!(
             render_to_string(&r, Format::Json),
@@ -67,6 +68,7 @@ mod tests {
                 Value::Numeric("1.10".into()),
                 Value::Numeric("not-a-number".into()),
             ]],
+            ..Default::default()
         };
         assert_eq!(
             render_to_string(&r, Format::Json),
