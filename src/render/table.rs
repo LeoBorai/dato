@@ -17,6 +17,9 @@ fn clean(s: &str) -> String {
     s.replace('\r', "\\r")
         .replace('\n', "\\n")
         .replace('\t', "\\t")
+        .chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
 }
 
 /// Longest cell text in the `ascii` table; longer text ends in `…`.
@@ -479,6 +482,13 @@ mod tests {
         r.meta[0].primary_key = false;
         let s = crate::render::render_to_string_with(&r, Format::Ascii, true);
         assert!(s.contains("\x1b[35m1\x1b[0m"), "{s:?}");
+    }
+
+    #[test]
+    fn control_characters_never_reach_the_terminal() {
+        let r = rs("c", vec![Value::Text("a\x1b[2Jb\x08c".into())]);
+        let s = render_to_string(&r, Format::Ascii);
+        assert!(!s.contains('\x1b') && !s.contains('\x08'), "{s:?}");
     }
 
     #[test]
