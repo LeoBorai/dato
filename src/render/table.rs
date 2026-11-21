@@ -17,6 +17,21 @@ fn clean(s: &str) -> String {
     s.replace('\r', "\\r")
         .replace('\n', "\\n")
         .replace('\t', "\\t")
+        .chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
+}
+
+/// Longest cell text in the `ascii` table; longer text ends in `…`.
+const MAX_CELL_WIDTH: usize = 60;
+
+fn truncate(s: String) -> String {
+    if s.chars().count() <= MAX_CELL_WIDTH {
+        return s;
+    }
+    let mut t: String = s.chars().take(MAX_CELL_WIDTH - 1).collect();
+    t.push('…');
+    t
 }
 
 fn pad(text: &str, width: usize, right: bool) -> String {
@@ -45,14 +60,15 @@ fn paint(text: &str, style: Option<Style>) -> String {
 
 fn value_style(v: &Value, meta: Option<&ColumnMeta>) -> Option<Style> {
     if matches!(v, Value::Null) {
-        return Some(Style::new().fg(Color::DarkGray));
+        return Some(Style::new().italic().fg(Color::DarkGray));
+    }
+    if v.is_numeric() && meta.is_none_or(|m| !m.primary_key && !m.boolean) {
+        return Some(Style::new().fg(Color::Magenta));
     }
     let m = meta?;
     if m.primary_key {
-        Some(Style::new().fg(Color::Green))
+        Some(Style::new().fg(Color::Fixed(214)))
     } else if m.boolean {
-        Some(Style::new().fg(Color::Magenta))
-    } else if v.is_numeric() {
         Some(Style::new().fg(Color::Yellow))
     } else {
         None
@@ -69,8 +85,9 @@ fn value_style(v: &Value, meta: Option<&ColumnMeta>) -> Option<Style> {
 /// ├─────────────┼───────┤
 /// ```
 ///
-/// With `colors`, headers are bold cyan with a plain cyan type, and values
-/// are colored by kind (primary key, boolean, number); text stays neutral.
+/// With `colors`, header names are bold light blue with a plain type, and
+/// values are colored by kind (key orange, boolean yellow, number magenta,
+/// NULL dim italic); text stays neutral. Cells are cut at 60 characters.
 pub fn render_ascii(rs: &ResultSet, colors: bool, out: &mut dyn Write) -> io::Result<()> {
     let meta = |i: usize| rs.meta.get(i).filter(|_| rs.meta.len() == rs.columns.len());
     let header: Vec<(String, Option<String>)> = rs
@@ -85,7 +102,13 @@ pub fn render_ascii(rs: &ResultSet, colors: bool, out: &mut dyn Write) -> io::Re
         .map(|r| {
             r.iter()
                 .enumerate()
-                .map(|(i, v)| (clean(&display(v)), value_style(v, meta(i)), v.is_numeric()))
+                .map(|(i, v)| {
+                    (
+                        truncate(clean(&display(v))),
+                        value_style(v, meta(i)),
+                        v.is_numeric(),
+                    )
+                })
                 .collect()
         })
         .collect();
@@ -121,10 +144,7 @@ pub fn render_ascii(rs: &ResultSet, colors: bool, out: &mut dyn Write) -> io::Re
         .map(|(h, w)| {
             let gap = " ".repeat(w.saturating_sub(head_w(h)));
             let (name_style, type_style) = if colors {
-                (
-                    Some(Style::new().bold().fg(Color::Cyan)),
-                    Some(Style::new().fg(Color::Cyan)),
-                )
+                (Some(Style::new().bold().fg(Color::LightBlue)), None)
             } else {
                 (None, None)
             };
@@ -441,13 +461,13 @@ mod tests {
     #[test]
     fn colors_header_pk_boolean_number() {
         let s = crate::render::render_to_string_with(&typed(), Format::Ascii, true);
+        assert!(s.contains("\x1b[1;94mid\x1b[0m (int4)"), "{s:?}");
+        assert!(s.contains("\x1b[38;5;214m1\x1b[0m"), "pk orange: {s:?}");
+        assert!(s.contains("\x1b[33mt\x1b[0m"), "bool yellow: {s:?}");
         assert!(
-            s.contains("\x1b[1;36mid\x1b[0m\x1b[36m (int4)\x1b[0m"),
-            "{s:?}"
+            s.contains("\x1b[3;90m<null>\x1b[0m"),
+            "null dim italic: {s:?}"
         );
-        assert!(s.contains("\x1b[32m1\x1b[0m"), "pk green: {s:?}");
-        assert!(s.contains("\x1b[35mt\x1b[0m"), "bool magenta: {s:?}");
-        assert!(s.contains("\x1b[90m<null>\x1b[0m"), "null dim: {s:?}");
         assert!(
             !s.contains("Alice\x1b") && !s.contains("\x1b[0mAlice"),
             "text neutral"
@@ -457,10 +477,25 @@ mod tests {
     }
 
     #[test]
-    fn numbers_are_yellow_without_pk() {
+    fn numbers_are_magenta_without_pk() {
         let mut r = typed();
         r.meta[0].primary_key = false;
         let s = crate::render::render_to_string_with(&r, Format::Ascii, true);
-        assert!(s.contains("\x1b[33m1\x1b[0m"), "{s:?}");
+        assert!(s.contains("\x1b[35m1\x1b[0m"), "{s:?}");
+    }
+
+    #[test]
+    fn control_characters_never_reach_the_terminal() {
+        let r = rs("c", vec![Value::Text("a\x1b[2Jb\x08c".into())]);
+        let s = render_to_string(&r, Format::Ascii);
+        assert!(!s.contains('\x1b') && !s.contains('\x08'), "{s:?}");
+    }
+
+    #[test]
+    fn long_text_is_truncated() {
+        let r = rs("c", vec![Value::Text("x".repeat(100))]);
+        let s = render_to_string(&r, Format::Ascii);
+        let cell = format!("{}…", "x".repeat(59));
+        assert!(s.contains(&cell) && !s.contains(&"x".repeat(60)), "{s}");
     }
 }

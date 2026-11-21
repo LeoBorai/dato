@@ -18,7 +18,7 @@ use crate::client::ConnectOptions;
 use crate::editor::{self, external};
 use crate::paths;
 use crate::store::default_name;
-use crate::ui::organisms::{ConnectWizard, NewConnection, Pager, too_wide};
+use crate::ui::organisms::{ConnectWizard, NewConnection, Pager, too_tall, too_wide};
 use crate::ui::{server_color, server_title, term};
 use nu_ansi_term::{Color, Style};
 use session::{Output, PromptInfo, Session, Target};
@@ -253,8 +253,8 @@ pub fn emit(outputs: &[Output], out: &mut dyn Write, err: &mut dyn Write, colors
     quit
 }
 
-/// Shows `text` in the pager when it is wider than the terminal, so rows stay
-/// aligned and Left/Right scroll through the columns. Returns `false` (and shows
+/// Shows `text` in the pager when it is wider or taller than the terminal, so rows stay
+/// aligned and the arrows scroll through columns and rows. Returns `false` (and shows
 /// nothing) when the text fits or stdout is not a terminal; the caller prints it.
 fn page(text: &str) -> bool {
     use std::io::IsTerminal;
@@ -264,7 +264,7 @@ fn page(text: &str) -> bool {
     let Ok((columns, rows)) = crossterm::terminal::size() else {
         return false;
     };
-    if !too_wide(text, columns as usize) {
+    if !too_wide(text, columns as usize) && !too_tall(text, rows as usize) {
         return false;
     }
     // No pager (e.g. raw mode unavailable): fall back to plain output.
