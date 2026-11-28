@@ -10,6 +10,7 @@ use crate::client::{self as db, Client, ClientError, ConnectOptions, ResultSet, 
 pub use crate::client::{Relation, RelationKind};
 use crate::dialect::{Dialect, Qualifier};
 use crate::render::{Format, render_to_string_with};
+use crate::safeguard::{self, Prompter, Safeguard};
 use crate::server::Server;
 use crate::store::{default_name, prompt_detail};
 use crate::{special, sql};
@@ -142,6 +143,10 @@ pub struct Session {
     /// Options of the last successful `connect`, kept across `\\disconnect`
     /// so `\\reconnect` can reopen it.
     last_options: Option<ConnectOptions>,
+    /// Checks made before `UPDATE` and `DELETE`.
+    safeguard: Option<Safeguard>,
+    /// Asks the user on behalf of the safeguard.
+    prompter: Box<dyn Prompter>,
 }
 
 pub fn status_line(result: &StatementResult, elapsed: Duration) -> String {
@@ -179,6 +184,8 @@ impl Session {
             connection_detail: String::new(),
             last_elapsed: None,
             last_options: None,
+            safeguard: None,
+            prompter: Box::new(safeguard::Deny),
         }
     }
 
@@ -190,6 +197,10 @@ impl Session {
         // Reconnecting to the same target keeps its name.
         if self.last_options.as_ref() != Some(opts) || self.connection_name.is_none() {
             self.connection_name = Some(default_name(opts));
+        }
+        // Reconnecting to the same target keeps its safeguard too.
+        if self.last_options.as_ref() != Some(opts) {
+            self.safeguard = None;
         }
         self.last_options = Some(opts.clone());
         self.connection_detail = prompt_detail(opts);
@@ -228,6 +239,15 @@ impl Session {
     /// Names the current connection in the prompt.
     pub fn set_connection_name(&mut self, name: String) {
         self.connection_name = Some(name);
+    }
+
+    /// Sets the safeguard of the current connection.
+    pub fn set_safeguard(&mut self, level: Option<Safeguard>) {
+        self.safeguard = level;
+    }
+
+    pub fn set_prompter(&mut self, prompter: Box<dyn Prompter>) {
+        self.prompter = prompter;
     }
 
     /// What the prompt's first line shows.
@@ -356,6 +376,15 @@ impl Session {
         };
         let (body, vertical) = sql::split_vertical(input);
         let statements = sql::split_statements_with(body, &dialect.lex_rules());
+        // Checked before running anything, so an abort leaves no partial work.
+        if let Some(level) = self.safeguard
+            && statements
+                .iter()
+                .any(|s| safeguard::is_guarded(s, &dialect.lex_rules()))
+            && !safeguard::allows(level, self.last_options.as_ref(), self.prompter.as_mut())
+        {
+            return vec![Output::Error("query aborted by safeguard".into())];
+        }
         let mut outputs = Vec::new();
         let mut refresh = false;
         let last = statements.len().saturating_sub(1);
@@ -558,6 +587,25 @@ mod tests {
         assert_eq!(s.prompt_label(), ":memory:");
         assert!(s.schema().read().unwrap().relations.is_empty());
         assert_eq!(s.server(), Some(Server::Sqlite));
+    }
+
+    #[test]
+    fn safeguard_stops_the_whole_input() {
+        let mut s = Session::disconnected(Format::Tsv, false);
+        s.connect(&ConnectOptions::sqlite(None)).unwrap();
+        s.handle("create table t(a);");
+        s.set_safeguard(Some(Safeguard::Confirm));
+        // The default prompter refuses.
+        let out = s.handle("insert into t values (1); delete from t;");
+        assert!(matches!(&out[0], Output::Error(e) if e.contains("safeguard")));
+        assert!(!texts(&s.handle("select count(*) from t;")).contains('1'));
+        // Kept on reconnect, dropped for another target.
+        s.connect(&ConnectOptions::sqlite(None)).unwrap();
+        assert_eq!(s.safeguard, Some(Safeguard::Confirm));
+        let dir = tempfile::tempdir().unwrap();
+        s.connect(&ConnectOptions::sqlite(dir.path().join("a.db").to_str()))
+            .unwrap();
+        assert_eq!(s.safeguard, None);
     }
 
     #[test]

@@ -36,6 +36,22 @@ When output is piped, the default format is `tsv`; on a terminal it is `ascii`.
 In batch mode the first failing statement stops the run with exit status 1.
 `-e` and piped input need a database target.
 
+### Safeguards
+
+A saved connection can have a safeguard level, chosen in the connect wizard
+("Safeguard level"), that applies before `UPDATE` and `DELETE` statements are sent:
+
+| Level | Behavior |
+|---|---|
+| `none` | Send right away (default) |
+| `1` | Ask for confirmation |
+| `2` | Ask for the connection password; with any other authentication (Vault, no password, SQLite) the query is blocked |
+
+Connections made from command-line arguments or `\connect <server> <args>` have no
+safeguard. Safeguards help against mistakes, not against attackers: they read the
+statement text only, so writes made by functions or procedures are not detected,
+and `DROP` and `TRUNCATE` are not covered. Use database permissions to forbid writes.
+
 ### Servers
 
 | Server | Arguments |
