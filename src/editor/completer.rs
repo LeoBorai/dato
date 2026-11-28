@@ -23,6 +23,7 @@ const MAX_CANDIDATES: usize = 100;
 pub enum Kind {
     Table,
     View,
+    Schema,
     Column,
     Keyword,
     Command,
@@ -157,16 +158,28 @@ pub fn candidates(cache: &SchemaCache, line: &str, pos: usize) -> (usize, Vec<Ca
     let mut out = Vec::new();
     for expect in &ctx.expect {
         match expect {
-            Expect::Relations => out.extend(rank(
-                &prefix,
-                cache.relations.iter().map(|r| {
+            Expect::Relations => {
+                let relations = cache.relations.iter().map(|r| {
                     let (kind, label) = match r.kind {
                         RelationKind::Table => (Kind::Table, "table"),
                         RelationKind::View => (Kind::View, "view"),
                     };
                     (r.name.as_str(), kind, label.to_string())
-                }),
-            )),
+                });
+                // Schemas other than the default one, to qualify a table with.
+                let schemas = cache
+                    .qualified
+                    .iter()
+                    .filter(|(s, _)| server.qualifier() == Qualifier::Schema && s != "public")
+                    .map(|(s, _)| (s.as_str(), Kind::Schema, "schema".to_string()));
+                let mut hits = rank(&prefix, relations.chain(schemas));
+                // With nothing typed, schemas lead so a long table list cannot
+                // push them past the candidate limit.
+                if prefix.is_empty() {
+                    hits.sort_by_key(|c| c.kind != Kind::Schema);
+                }
+                out.extend(hits);
+            }
             // `db.` or `schema.`: that database's or schema's tables, unless the
             // name is also a relation or alias in scope.
             Expect::Columns
@@ -643,5 +656,25 @@ mod tests {
         assert!(values_in(&c, "select x.|").is_empty());
         assert!(values_in(&c, "retur|").contains(&"returning".to_string()));
         assert!(!values_in(&c, "prag|").contains(&"pragma".to_string()));
+    }
+
+    #[test]
+    fn schemas_are_offered_where_a_table_goes_on_postgres() {
+        let mut c = psql_cache();
+        c.qualified.push(("sales".into(), "refunds".into()));
+        // Once each, leading, and without the default schema.
+        assert_eq!(values_in(&c, "select * from |"), ["sales", "orders"]);
+        assert_eq!(values_in(&c, "select * from sa|"), ["sales"]);
+        assert_eq!(values_in(&c, "select * from orders join sa|"), ["sales"]);
+        let found = candidates(&c, "select * from sa", 16).1;
+        assert_eq!(
+            (found[0].kind, found[0].detail.as_str()),
+            (Kind::Schema, "schema")
+        );
+        // Only the default schema: nothing extra.
+        c.qualified.retain(|(s, _)| s == "public");
+        assert_eq!(values_in(&c, "select * from |"), ["orders"]);
+        // MySQL qualifiers are databases, not schemas.
+        assert_eq!(values_in(&mysql_cache(), "select * from |"), ["orders"]);
     }
 }

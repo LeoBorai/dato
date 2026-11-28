@@ -135,7 +135,7 @@ A successful connect replaces the current connection; a failed one keeps it.
 |---|---|
 | Enter | Submit when the statement ends with `;`, otherwise add a line |
 | Alt-Enter | Submit regardless |
-| Tab | Complete keywords, tables, columns and commands |
+| Tab | Complete keywords, schemas, tables, columns and commands |
 | Ctrl-O, or end the input with `\e` | Edit in `$VISUAL` / `$EDITOR` (default `vi`) |
 | Ctrl-C | Cancel a running query, or clear the input |
 | Ctrl-D | Exit |
