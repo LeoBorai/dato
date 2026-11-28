@@ -74,6 +74,7 @@ pub fn run(session: &mut Session) {
                 name: c.name.clone(),
                 detail: c.detail(),
                 server: c.server(),
+                tag: c.tag,
             })
             .collect();
         let choice = match term::run(&mut welcome_screen(items)) {
@@ -88,7 +89,7 @@ pub fn run(session: &mut Session) {
                 return;
             }
         };
-        let (name, mut opts, save_password) = match choice {
+        let (name, mut opts, wizard) = match choice {
             WelcomeChoice::Saved(i) => {
                 let c = &store.items()[i];
                 (c.name.clone(), c.opts.clone(), None)
@@ -98,7 +99,7 @@ pub fn run(session: &mut Session) {
                 match term::run(&mut wizard_screen()) {
                     Ok(Some(new)) => {
                         let name = new.name.clone().unwrap_or_else(|| default_name(&new.opts));
-                        (name, new.opts, Some(new.save_password))
+                        (name, new.opts, Some((new.tag, new.save_password)))
                     }
                     Ok(None) => continue,
                     Err(e) => {
@@ -119,8 +120,8 @@ pub fn run(session: &mut Session) {
         }
         // Leave the shell at the top of a clean screen.
         let _ = execute!(out, Clear(ClearType::All), cursor::MoveTo(0, 0));
-        match save_password {
-            Some(keep) => store.remember(&name, &opts, keep, now()),
+        match wizard {
+            Some((tag, keep)) => store.remember(&name, &opts, tag, keep, now()),
             None => store.touch(&name, now()),
         }
         if let Err(e) = store.save() {

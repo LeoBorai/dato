@@ -5,7 +5,8 @@ use nu_ansi_term::{Color, Style};
 use unicode_width::UnicodeWidthStr;
 
 use crate::server::Server;
-use crate::ui::{Line, Step, Widget, is_cancel, server_color};
+use crate::store::Tag;
+use crate::ui::{Line, Step, Widget, is_cancel, server_color, tag_color};
 
 const LOGO: &str = "\
 ██████╗  █████╗ ████████╗ ██████╗
@@ -45,6 +46,7 @@ pub struct WelcomeItem {
     /// `user@host:port` or a file.
     pub detail: String,
     pub server: Server,
+    pub tag: Option<Tag>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +178,10 @@ impl Welcome {
                     Style::new().fg(Color::DarkGray),
                     format!("({})", item.detail),
                 );
+                if let Some(tag) = item.tag {
+                    let style = Style::new().fg(tag_color(tag));
+                    line.push(style, format!(" [{}]", tag.name()));
+                }
                 line
             })
             .collect();
@@ -216,6 +222,7 @@ mod tests {
             name: name.into(),
             detail: "username@localhost:5432".into(),
             server,
+            tag: None,
         }
     }
 
@@ -260,6 +267,30 @@ mod tests {
             colors,
             [Some(Color::Cyan), Some(Color::Yellow), Some(Color::Purple)]
         );
+    }
+
+    #[test]
+    fn tags_are_shown_in_their_color() {
+        for (tag, color) in [
+            (Tag::Local, Color::DarkGray),
+            (Tag::Testing, Color::Cyan),
+            (Tag::Development, Color::Blue),
+            (Tag::Staging, Color::Green),
+            (Tag::Production, Color::Red),
+        ] {
+            let w = Welcome::new(vec![WelcomeItem {
+                tag: Some(tag),
+                ..item("a", Server::Sqlite)
+            }]);
+            let label = format!(" [{}]", tag.name());
+            let found = w
+                .render()
+                .iter()
+                .flat_map(|l| l.0.iter())
+                .find(|(_, t)| *t == label)
+                .map(|(s, _)| s.foreground);
+            assert_eq!(found, Some(Some(color)), "{label}");
+        }
     }
 
     #[test]

@@ -5,10 +5,21 @@ use nu_ansi_term::{Color, Style};
 
 use crate::client::ConnectOptions;
 use crate::server::Server;
+use crate::store::Tag;
 use crate::ui::atoms::{PasswordInput, PathInput, SelectList, TextInput};
 use crate::ui::form::{AUTH_PASSWORD, is_visible};
 use crate::ui::molecules::{Choice, FieldInput, LabeledField};
 use crate::ui::{ConnectForm, Field, FieldValues, Line, Step, Widget, server_color, server_title};
+
+/// Choices of the "Environment tag" field.
+const TAGS: &[&str] = &[
+    "none",
+    "local",
+    "testing",
+    "development",
+    "staging",
+    "production",
+];
 
 /// What the wizard collected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,6 +27,8 @@ pub struct NewConnection {
     pub opts: ConnectOptions,
     /// Name to save the connection as; `None` when left empty.
     pub name: Option<String>,
+    /// Environment of the connection; `None` when left at `none`.
+    pub tag: Option<Tag>,
     /// Keep the password with the saved connection.
     pub save_password: bool,
 }
@@ -81,6 +94,7 @@ impl ConnectWizard {
             placeholder: "auto",
             ..Field::text("name", "Connection name", "")
         });
+        specs.push(Field::choice("tag", "Environment tag", TAGS, "none"));
         if has_password {
             let save = Field::choice("save_password", "Save password", &["no", "yes"], "no");
             // Vault provides the password: there is none to save.
@@ -148,6 +162,7 @@ impl Widget for ConnectWizard {
                             opts,
                             name: Some(values.get("name").trim().to_string())
                                 .filter(|n| !n.is_empty()),
+                            tag: Tag::parse(values.get("tag")),
                             save_password: values.get("save_password") == "yes",
                         }),
                         Err(e) => {
@@ -257,18 +272,34 @@ mod tests {
     #[test]
     fn sqlite_through_the_wizard() {
         let mut w = ConnectWizard::new();
-        // provider, file, then the connection name left empty.
+        // provider, file, then the connection name and tag left as they are.
         let keys = [enter()]
             .into_iter()
             .chain(typed("app.db"))
-            .chain([enter(), enter()]);
+            .chain([enter(), enter(), enter()]);
         assert_eq!(
             feed(&mut w, keys),
             Step::Done(NewConnection {
                 opts: ConnectOptions::sqlite(Some("app.db")),
                 name: None,
+                tag: None,
                 save_password: false,
             })
+        );
+    }
+
+    #[test]
+    fn tag_is_picked_with_the_arrow_keys() {
+        let mut w = ConnectWizard::new();
+        // provider, file, connection name.
+        feed(&mut w, [enter()].into_iter().chain(typed("app.db")));
+        feed(&mut w, [enter(), enter()]);
+        let s = screen(&w);
+        assert!(s.contains("Environment tag: < none >"), "{s}");
+        let done = feed(&mut w, [key(KeyCode::Left), enter()]);
+        assert!(
+            matches!(&done, Step::Done(n) if n.tag == Some(Tag::Production)),
+            "{done:?}"
         );
     }
 
@@ -293,8 +324,11 @@ mod tests {
         );
         feed(&mut w, [enter()]);
         feed(&mut w, typed("shop").into_iter().chain([enter()]));
-        // Connection name, then "Save password" (no by default).
-        feed(&mut w, typed("shopify").into_iter().chain([enter()]));
+        // Connection name, tag, then "Save password" (no by default).
+        feed(
+            &mut w,
+            typed("shopify").into_iter().chain([enter(), enter()]),
+        );
         assert!(screen(&w).contains("Save password: (*) no  ( ) yes"));
         let done = feed(&mut w, [key(KeyCode::Right), enter()]);
         assert!(!screen(&w).contains("secret"));
@@ -312,6 +346,7 @@ mod tests {
                     vault: None,
                 }),
                 name: Some("shopify".into()),
+                tag: None,
                 save_password: true,
             })
         );
@@ -326,6 +361,7 @@ mod tests {
             feed(
                 &mut w,
                 [
+                    enter(),
                     enter(),
                     enter(),
                     enter(),
@@ -404,8 +440,8 @@ mod tests {
             "{}",
             screen(&w)
         );
-        // TLS mode, connection name, save password.
-        let done = feed(&mut w, [enter(), enter(), enter()]);
+        // TLS mode, connection name, tag, save password.
+        let done = feed(&mut w, [enter(), enter(), enter(), enter()]);
         assert_eq!(
             done,
             Step::Done(NewConnection {
@@ -421,6 +457,7 @@ mod tests {
                     vault: None,
                 }),
                 name: None,
+                tag: None,
                 save_password: false,
             })
         );
@@ -459,9 +496,9 @@ mod tests {
         feed(&mut w, [enter()]);
         assert!(screen(&w).contains("Username key: username"));
         feed(&mut w, [enter(), enter()]);
-        // database, TLS mode, connection name; no "Save password".
+        // database, TLS mode, connection name, tag; no "Save password".
         feed(&mut w, typed("shop").into_iter().chain([enter(), enter()]));
-        let done = feed(&mut w, [enter()]);
+        let done = feed(&mut w, [enter(), enter()]);
         assert!(!screen(&w).contains("Save password"), "{}", screen(&w));
         let Step::Done(NewConnection {
             opts: ConnectOptions::Psql(p),
@@ -497,7 +534,7 @@ mod tests {
         feed(&mut w, [enter(), enter(), enter()]);
         feed(&mut w, [key(KeyCode::Right), key(KeyCode::Right)]);
         assert!(screen(&w).contains("( ) disable  ( ) prefer  (*) require"));
-        let done = feed(&mut w, [enter(), enter(), enter()]);
+        let done = feed(&mut w, [enter(), enter(), enter(), enter()]);
         assert!(
             matches!(done, Step::Done(NewConnection { opts: ConnectOptions::Psql(p), .. }) if p.sslmode == SslMode::Require)
         );

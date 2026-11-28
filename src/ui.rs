@@ -18,6 +18,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nu_ansi_term::{Color, Style};
 
 use crate::server::Server;
+use crate::store::Tag;
 
 pub use form::{ConnectForm, Field, FieldValues};
 
@@ -27,6 +28,17 @@ pub fn server_color(server: Server) -> Color {
         Server::PostgreSql => Color::Cyan,
         Server::MySql => Color::Yellow,
         Server::Sqlite => Color::Purple,
+    }
+}
+
+/// The color of an environment tag.
+pub fn tag_color(tag: Tag) -> Color {
+    match tag {
+        Tag::Local => Color::DarkGray,
+        Tag::Testing => Color::Cyan,
+        Tag::Development => Color::Blue,
+        Tag::Staging => Color::Green,
+        Tag::Production => Color::Red,
     }
 }
 
