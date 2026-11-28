@@ -127,6 +127,8 @@ A successful connect replaces the current connection; a failed one keeps it.
 
 `ascii`, `psql`, `markdown`, `csv`, `tsv`, `json`, `vertical`.
 
+`json` is pretty-printed, and syntax highlighted when colors are on. Type `\T ` to pick a format from the suggestions.
+
 ## Key bindings
 
 | Key | Action |

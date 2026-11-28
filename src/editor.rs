@@ -4,9 +4,11 @@ mod completer;
 mod context;
 pub mod external;
 mod highlighter;
+mod keys;
 mod menu;
 mod validator;
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
 use reedline::{
@@ -21,6 +23,7 @@ pub use completer::{Candidate, Kind, SqlCompleter, candidates};
 pub use highlighter::{SqlHighlighter, spans, spans_with};
 pub use validator::SqlValidator;
 
+use keys::SpaceTracker;
 use menu::QuietMenu;
 
 const MENU: &str = "completion_menu";
@@ -45,12 +48,12 @@ pub fn build(schema: Arc<RwLock<SchemaCache>>, dialect: Arc<RwLock<Server>>) -> 
     keys.add_binding(KeyModifiers::ALT, KeyCode::Enter, ReedlineEvent::Submit);
 
     // Open the menu as the user types instead of waiting for Tab. The menu
-    // refreshes itself while open; a space or punctuation closes it, and `.`
-    // reopens it for `alias.` completion.
+    // refreshes itself while open; punctuation closes it, and `.` reopens it
+    // for `alias.` completion. A space reopens it for `\\T` formats only.
     for c in ('a'..='z')
         .chain('A'..='Z')
         .chain('0'..='9')
-        .chain(['_', '$', '.', '\\'])
+        .chain(['_', '$', '.', '\\', ' '])
     {
         let modifiers = if c.is_ascii_uppercase() {
             KeyModifiers::SHIFT
@@ -96,8 +99,10 @@ pub fn build(schema: Arc<RwLock<SchemaCache>>, dialect: Arc<RwLock<Server>>) -> 
         ]),
     );
 
+    let after_space = Arc::new(AtomicBool::new(false));
+    let completer = SqlCompleter::new(schema, Arc::clone(&after_space));
     let mut editor = Reedline::create()
-        .with_completer(Box::new(SqlCompleter::new(schema)))
+        .with_completer(Box::new(completer))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(QuietMenu::new(
             IdeMenu::default()
                 .with_name(MENU)
@@ -107,7 +112,7 @@ pub fn build(schema: Arc<RwLock<SchemaCache>>, dialect: Arc<RwLock<Server>>) -> 
         ))))
         .with_highlighter(Box::new(SqlHighlighter::new(Arc::clone(&dialect))))
         .with_validator(Box::new(SqlValidator::new(dialect)))
-        .with_edit_mode(Box::new(Emacs::new(keys)));
+        .with_edit_mode(Box::new(SpaceTracker::new(Emacs::new(keys), after_space)));
 
     let command = external::editor_command();
     let mut parts = command.split_whitespace();

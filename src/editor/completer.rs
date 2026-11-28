@@ -3,12 +3,14 @@
 //! `analyze` decides what kinds of names fit the cursor; this module collects
 //! them from the schema, matches them against the typed fragment and ranks them.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use reedline::{Completer, CompletionResult, Span, Suggestion};
 
 use super::context::{Context, Expect, Reference, analyze_with};
 use crate::dialect::{Dialect, Qualifier};
+use crate::render::Format;
 #[cfg(test)]
 use crate::server::Server;
 use crate::special::symbolic_names;
@@ -25,6 +27,7 @@ pub enum Kind {
     Keyword,
     Command,
     Database,
+    Format,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +226,12 @@ pub fn candidates(cache: &SchemaCache, line: &str, pos: usize) -> (usize, Vec<Ca
                 out.extend(hits);
             }
             Expect::Keywords => {}
+            Expect::Formats => out.extend(rank(
+                &prefix,
+                Format::NAMES
+                    .iter()
+                    .map(|n| (*n, Kind::Format, "format".to_string())),
+            )),
             Expect::Commands => out.extend(rank(
                 &prefix,
                 symbolic_names()
@@ -237,18 +246,28 @@ pub fn candidates(cache: &SchemaCache, line: &str, pos: usize) -> (usize, Vec<Ca
 
 pub struct SqlCompleter {
     schema: Arc<RwLock<SchemaCache>>,
+    after_space: Arc<AtomicBool>,
 }
 
 impl SqlCompleter {
-    pub fn new(schema: Arc<RwLock<SchemaCache>>) -> Self {
-        Self { schema }
+    /// `after_space` is set while the last key typed was a space.
+    pub fn new(schema: Arc<RwLock<SchemaCache>>, after_space: Arc<AtomicBool>) -> Self {
+        Self {
+            schema,
+            after_space,
+        }
     }
 }
 
 impl Completer for SqlCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
         let cache = self.schema.read().unwrap();
-        let (start, found) = candidates(&cache, line, pos);
+        let (start, mut found) = candidates(&cache, line, pos);
+        // A space opens the menu only for `\T`; elsewhere it waits for Tab or
+        // the next word.
+        if self.after_space.load(Ordering::Relaxed) {
+            found.retain(|c| c.kind == Kind::Format);
+        }
         let suggestions: Vec<Suggestion> = found
             .into_iter()
             .map(|c| Suggestion {
@@ -534,12 +553,32 @@ mod tests {
     #[test]
     fn suggestion_carries_span_and_description() {
         let schema = Arc::new(RwLock::new(cache()));
-        let mut comp = SqlCompleter::new(schema);
+        let mut comp = SqlCompleter::new(schema, Arc::default());
         let r = comp.complete("select * from ord", 17);
         let s = r.suggestions();
         assert_eq!(s[0].value, "orders");
         assert_eq!((s[0].span.start, s[0].span.end), (14, 17));
         assert_eq!(s[0].description.as_deref(), Some("table"));
+    }
+
+    #[test]
+    fn format_command_offers_every_format() {
+        let mut all = Format::NAMES.to_vec();
+        all.sort_unstable();
+        assert_eq!(values("\\T |"), all);
+        assert_eq!(values("\\T js|"), ["json"]);
+        assert!(values("\\T json|").is_empty());
+    }
+
+    #[test]
+    fn space_offers_only_formats() {
+        let after_space = Arc::new(AtomicBool::new(true));
+        let mut comp = SqlCompleter::new(Arc::new(RwLock::new(cache())), after_space);
+        assert!(comp.complete("select * from ", 14).suggestions().is_empty());
+        assert_eq!(
+            comp.complete("\\T ", 3).suggestions().len(),
+            Format::NAMES.len()
+        );
     }
 
     #[test]

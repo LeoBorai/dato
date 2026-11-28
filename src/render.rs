@@ -63,7 +63,8 @@ pub fn render(rs: &ResultSet, format: Format, out: &mut dyn Write) -> io::Result
     render_with(rs, format, false, out)
 }
 
-/// Like [`render`]; `colors` paints the `ascii` table (other formats stay plain).
+/// Like [`render`]; `colors` paints the `ascii` table and
+/// highlights `json` (other formats stay plain).
 pub fn render_with(
     rs: &ResultSet,
     format: Format,
@@ -75,7 +76,7 @@ pub fn render_with(
         Format::Psql | Format::Markdown => table::render(rs, format, out),
         Format::Csv => delimited::render(rs, ',', out),
         Format::Tsv => delimited::render(rs, '\t', out),
-        Format::Json => json::render(rs, out),
+        Format::Json => json::render(rs, colors, out),
         Format::Vertical => vertical::render(rs, out),
     }
 }
