@@ -16,6 +16,8 @@ pub enum Expect {
     Commands,
     /// Database names (after `USE`).
     Databases,
+    /// Output format names (after `\\T`).
+    Formats,
 }
 
 /// A table or view named in the statement, with its alias when it has one.
@@ -197,6 +199,16 @@ pub fn analyze_with(line: &str, pos: usize, server: Server) -> Context {
         outer_qualifier: None,
         references: Vec::new(),
     };
+
+    // The argument of `\T`.
+    if line[..start]
+        .trim_start()
+        .strip_prefix("\\T")
+        .is_some_and(|gap| !gap.is_empty() && gap.trim().is_empty())
+    {
+        ctx.expect = vec![Expect::Formats];
+        return ctx;
+    }
 
     // `.cmd` or `\cmd` at the start of input or after whitespace.
     let head = &line[..start];
@@ -453,6 +465,14 @@ mod tests {
         assert_eq!(c.expect, vec![Expect::Commands]);
         assert_eq!(ctx("\\d|").expect, vec![Expect::Commands]);
         assert_eq!(ctx("  .t|").start, 2);
+    }
+
+    #[test]
+    fn format_argument() {
+        assert_eq!(ctx("\\T |").expect, vec![Expect::Formats]);
+        assert_eq!(ctx("\\T js|").expect, vec![Expect::Formats]);
+        assert_ne!(ctx("\\T|").expect, vec![Expect::Formats]);
+        assert_ne!(ctx("\\T json |").expect, vec![Expect::Formats]);
     }
 
     #[test]

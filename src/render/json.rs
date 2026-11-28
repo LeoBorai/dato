@@ -1,7 +1,8 @@
-//! `json` format: an array with one object per row.
+//! `json` format: a pretty-printed array with one object per row.
 
 use std::io::{self, Write};
 
+use nu_ansi_term::{Color, Style};
 use serde_json::{Map, Number, Value as Json};
 
 use super::hex;
@@ -20,7 +21,60 @@ fn to_json(v: &Value) -> Json {
     }
 }
 
-pub fn render(rs: &ResultSet, out: &mut dyn Write) -> io::Result<()> {
+/// Paints pretty-printed JSON: keys, strings, numbers, booleans and nulls.
+/// Expects valid JSON, as written by `serde_json`.
+fn highlight(json: &str, out: &mut dyn Write) -> io::Result<()> {
+    let bytes = json.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let start = i;
+        let style = match bytes[i] {
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+                Some(if bytes.get(i) == Some(&b':') {
+                    Style::new().fg(Color::Cyan)
+                } else {
+                    Style::new().fg(Color::Green)
+                })
+            }
+            b'-' | b'0'..=b'9' => {
+                while i < bytes.len()
+                    && matches!(bytes[i], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')
+                {
+                    i += 1;
+                }
+                Some(Style::new().fg(Color::Purple))
+            }
+            b't' | b'f' | b'n' => {
+                while i < bytes.len() && bytes[i].is_ascii_lowercase() {
+                    i += 1;
+                }
+                Some(if bytes[start] == b'n' {
+                    Style::new().fg(Color::DarkGray)
+                } else {
+                    Style::new().bold().fg(Color::Blue)
+                })
+            }
+            _ => {
+                // Punctuation and whitespace, all single ASCII bytes.
+                i += 1;
+                None
+            }
+        };
+        let text = &json[start..i];
+        match style {
+            Some(s) => write!(out, "{}", s.paint(text))?,
+            None => out.write_all(text.as_bytes())?,
+        }
+    }
+    Ok(())
+}
+
+pub fn render(rs: &ResultSet, colors: bool, out: &mut dyn Write) -> io::Result<()> {
     let rows: Vec<Json> = rs
         .rows
         .iter()
@@ -32,13 +86,18 @@ pub fn render(rs: &ResultSet, out: &mut dyn Write) -> io::Result<()> {
             Json::Object(m)
         })
         .collect();
-    serde_json::to_writer(&mut *out, &Json::Array(rows))?;
+    let json = serde_json::to_string_pretty(&Json::Array(rows))?;
+    if colors {
+        highlight(&json, out)?;
+    } else {
+        out.write_all(json.as_bytes())?;
+    }
     writeln!(out)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Format, render_to_string};
+    use super::super::{Format, render_to_string, render_to_string_with};
     use crate::client::{ResultSet, Value};
 
     #[test]
@@ -55,7 +114,10 @@ mod tests {
         };
         assert_eq!(
             render_to_string(&r, Format::Json),
-            "[{\"a\":1,\"b\":null,\"c\":2.5,\"d\":\"x'0102'\"}]\n"
+            concat!(
+                "[\n  {\n    \"a\": 1,\n    \"b\": null,\n",
+                "    \"c\": 2.5,\n    \"d\": \"x'0102'\"\n  }\n]\n"
+            )
         );
     }
 
@@ -72,8 +134,36 @@ mod tests {
         };
         assert_eq!(
             render_to_string(&r, Format::Json),
-            "[{\"u\":18446744073709551615,\"d\":1.10,\"x\":\"not-a-number\"}]\n"
+            concat!(
+                "[\n  {\n    \"u\": 18446744073709551615,\n",
+                "    \"d\": 1.10,\n    \"x\": \"not-a-number\"\n  }\n]\n"
+            )
         );
+    }
+
+    #[test]
+    fn json_colors_leave_the_text_intact() {
+        let r = ResultSet {
+            columns: vec!["k\"ey".into(), "n".into(), "z".into()],
+            rows: vec![vec![
+                Value::Text("a \\ \"b\": é".into()),
+                Value::Real(-1.5e30),
+                Value::Null,
+            ]],
+            ..Default::default()
+        };
+        let colored = render_to_string_with(&r, Format::Json, true);
+        assert!(colored.contains('\x1b'));
+        let mut stripped = String::new();
+        let mut chars = colored.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                chars.by_ref().find(|&c| c == 'm');
+            } else {
+                stripped.push(c);
+            }
+        }
+        assert_eq!(stripped, render_to_string(&r, Format::Json));
     }
 
     #[test]
