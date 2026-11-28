@@ -213,6 +213,52 @@ pub struct FieldError {
     pub message: String,
 }
 
+/// The form values that describe `opts`: the reverse of [`ConnectForm::build`].
+/// The password is left out, so it is never put back into the form.
+pub fn form_values(opts: &ConnectOptions) -> FieldValues {
+    let text = |v: &Option<String>| v.clone().unwrap_or_default();
+    let mut out: Vec<(&'static str, String)> = Vec::new();
+    let vault = match opts {
+        ConnectOptions::Sqlite { path } => {
+            out.push(("file", text(path)));
+            None
+        }
+        ConnectOptions::MySql(o) => {
+            out.extend([
+                ("host", o.host.clone()),
+                ("port", o.port.to_string()),
+                ("user", o.user.clone()),
+                ("database", text(&o.database)),
+            ]);
+            o.vault.as_ref()
+        }
+        ConnectOptions::Psql(o) => {
+            out.extend([
+                ("host", o.host.clone()),
+                ("port", o.port.to_string()),
+                ("user", o.user.clone()),
+                ("database", text(&o.dbname)),
+                ("sslmode", o.sslmode.name().to_string()),
+            ]);
+            o.vault.as_ref()
+        }
+    };
+    if let Some(v) = vault {
+        out.extend([
+            ("auth", AUTH_VAULT.to_string()),
+            ("vault_secret", v.secret.clone()),
+            ("vault_address", text(&v.address)),
+            ("vault_token_file", text(&v.token_file)),
+            ("vault_ca_cert", text(&v.ca_cert)),
+            ("vault_namespace", text(&v.namespace)),
+            ("vault_secret_type", v.secret_type.name().to_string()),
+            ("vault_username_key", v.username_key.clone()),
+            ("vault_password_key", v.password_key.clone()),
+        ]);
+    }
+    FieldValues(out)
+}
+
 pub trait ConnectForm {
     fn fields(&self) -> Vec<Field>;
     fn build(&self, values: &FieldValues) -> Result<ConnectOptions, FieldError>;

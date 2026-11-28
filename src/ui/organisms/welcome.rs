@@ -55,6 +55,8 @@ pub enum WelcomeChoice {
     New,
     /// Index into the items given to [`Welcome::new`].
     Saved(usize),
+    /// Edit the saved connection at this index.
+    Edit(usize),
 }
 
 pub struct Welcome {
@@ -115,6 +117,9 @@ impl Widget for Welcome {
             KeyCode::Home => self.selected = 0,
             KeyCode::End => self.selected = n - 1,
             KeyCode::Enter => return Step::Done(self.choice()),
+            KeyCode::Char('e') if self.selected > 0 => {
+                return Step::Done(WelcomeChoice::Edit(self.selected - 1));
+            }
             _ => {}
         }
         Step::Continue
@@ -206,7 +211,7 @@ impl Welcome {
         out.push(Line::styled(border, format!("└─{}─┘", "─".repeat(width))));
         let hint = vec![Line::styled(
             border,
-            "Up/Down to choose, Enter to select, Esc for an empty shell",
+            "Up/Down to choose, Enter to select, e to edit, Esc for an empty shell",
         )];
         (logo, out, hint)
     }
@@ -366,6 +371,17 @@ mod tests {
         assert!(
             logo.iter().all(|m| *m == logo[0]) && logo[0] > 20,
             "{logo:?}"
+        );
+    }
+
+    #[test]
+    fn e_edits_only_a_saved_connection() {
+        let items = vec![item("a", Server::Sqlite)];
+        let e = key(KeyCode::Char('e'));
+        assert_eq!(feed(&mut Welcome::new(items.clone()), [e]), Step::Continue);
+        assert_eq!(
+            feed(&mut Welcome::new(items), [key(KeyCode::Down), e]),
+            Step::Done(WelcomeChoice::Edit(0))
         );
     }
 

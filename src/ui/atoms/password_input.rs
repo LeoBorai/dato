@@ -15,6 +15,11 @@ impl PasswordInput {
         Self(TextInput::new("").with_mask(MASK))
     }
 
+    /// Text shown, unmasked, while nothing is typed.
+    pub fn with_placeholder(self, placeholder: &str) -> Self {
+        Self(self.0.with_placeholder(placeholder))
+    }
+
     pub fn value(&self) -> String {
         self.0.value()
     }

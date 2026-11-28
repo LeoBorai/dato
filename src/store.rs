@@ -358,6 +358,23 @@ impl Store {
         self.sort();
     }
 
+    /// Replaces the connection called `old`, which may be renamed to `name`.
+    /// When it was last used does not change.
+    pub fn update(
+        &mut self,
+        old: &str,
+        name: &str,
+        opts: &ConnectOptions,
+        tag: Option<Tag>,
+        keep_password: bool,
+    ) {
+        if let Some(c) = self.items.iter_mut().find(|c| c.name == old) {
+            c.name = name.to_string();
+            c.opts = sanitize(opts, keep_password);
+            c.tag = tag;
+        }
+    }
+
     /// Marks the connection called `name` as used at `now`.
     pub fn touch(&mut self, name: &str, now: u64) {
         if let Some(c) = self.items.iter_mut().find(|c| c.name == name) {
@@ -535,6 +552,20 @@ mod tests {
             let v: Value = serde_json::from_str(&text).unwrap();
             assert_eq!(SavedConnection::from_json(&v).unwrap().tag, None);
         }
+    }
+
+    #[test]
+    fn update_renames_in_place() {
+        let mut s = Store::empty(None);
+        s.remember("a", &pg("a", None), None, false, 1);
+        s.remember("b", &pg("b", None), None, false, 2);
+        s.update("a", "c", &pg("c", Some("pw")), Some(Tag::Staging), false);
+        let c = &s.items()[1];
+        assert_eq!((c.name.as_str(), c.last_used), ("c", 1));
+        assert_eq!(c.tag, Some(Tag::Staging));
+        assert!(matches!(&c.opts, ConnectOptions::Psql(o)
+            if o.password.is_none() && o.password_required));
+        assert_eq!(s.items().len(), 2);
     }
 
     #[test]

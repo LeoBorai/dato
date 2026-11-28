@@ -50,13 +50,32 @@ fn welcome_screen(items: Vec<WelcomeItem>) -> Welcome {
     }
 }
 
-/// The connect wizard, centered like the welcome screen.
-fn wizard_screen() -> ConnectWizard {
-    let wizard = ConnectWizard::new();
+/// Centers the connect wizard like the welcome screen.
+fn centered(wizard: ConnectWizard) -> ConnectWizard {
     match crossterm::terminal::size() {
         Ok((columns, rows)) => wizard.centered(columns as usize, rows as usize),
         Err(_) => wizard,
     }
+}
+
+/// Runs the wizard on the saved connection at `i` and saves the changes,
+/// without connecting. A cancelled wizard changes nothing.
+fn edit(store: &mut Store, i: usize) -> std::io::Result<()> {
+    let original = store.items()[i].clone();
+    let old = original.name.clone();
+    let taken = store
+        .items()
+        .iter()
+        .map(|c| c.name.clone())
+        .filter(|n| *n != old)
+        .collect();
+    let mut wizard = centered(ConnectWizard::edit(original, taken));
+    let Some(new) = term::run(&mut wizard)? else {
+        return Ok(());
+    };
+    let name = new.name.as_deref().unwrap_or(&old);
+    store.update(&old, name, &new.opts, new.tag, new.save_password);
+    store.save()
 }
 
 /// Shows the welcome screen until a connection is made or the user presses
@@ -94,9 +113,22 @@ pub fn run(session: &mut Session) {
                 let c = &store.items()[i];
                 (c.name.clone(), c.opts.clone(), None)
             }
+            WelcomeChoice::Edit(i) => {
+                let _ = execute!(out, Clear(ClearType::All), cursor::MoveTo(0, 0));
+                if let Err(e) = edit(&mut store, i) {
+                    let _ = writeln!(
+                        err,
+                        "{}",
+                        error_line(format!("cannot edit the connection: {e}"), use_color())
+                    );
+                    let _ = writeln!(err, "Press Enter to go back.");
+                    let _ = std::io::stdin().read_line(&mut String::new());
+                }
+                continue;
+            }
             WelcomeChoice::New => {
                 let _ = execute!(out, Clear(ClearType::All), cursor::MoveTo(0, 0));
-                match term::run(&mut wizard_screen()) {
+                match term::run(&mut centered(ConnectWizard::new())) {
                     Ok(Some(new)) => {
                         let name = new.name.clone().unwrap_or_else(|| default_name(&new.opts));
                         (name, new.opts, Some((new.tag, new.save_password)))

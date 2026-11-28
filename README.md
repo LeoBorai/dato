@@ -74,7 +74,8 @@ is not `pg_dump`.
 `\connect` opens a wizard: pick a server with the arrow keys, then fill in its fields
 (the password is masked). A connection can carry an environment tag, shown next to it on
 the welcome screen: `local` (gray), `testing` (cyan), `development` (blue), `staging` (green)
-or `production` (red). `\connect <server> <args>` connects directly with the same
+or `production` (red). To edit a saved
+connection, select it on the welcome screen and press `e`; an empty password keeps the saved one. `\connect <server> <args>` connects directly with the same
 arguments as the CLI, e.g. `\connect mysql -u root -p db shop`, `\connect psql -U app -W db shop`
 or `\connect sqlite other.db`.
 A successful connect replaces the current connection; a failed one keeps it.
