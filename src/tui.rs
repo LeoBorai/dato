@@ -1,6 +1,7 @@
 //! The interactive shell (litecli-style REPL).
 
 pub mod interrupt;
+mod safeguard;
 pub mod session;
 pub mod welcome;
 
@@ -311,6 +312,7 @@ fn remember(new: &NewConnection, opts: &ConnectOptions, err: &mut dyn Write) {
     let mut store = welcome::open_store(err);
     let name = new.name.clone().unwrap_or_else(|| default_name(opts));
     store.remember(&name, opts, new.tag, new.save_password, welcome::now());
+    store.set_safeguard(&name, new.safeguard);
     if let Err(e) = store.save() {
         let _ = writeln!(err, "warning: cannot save the connection: {e}");
     }
@@ -350,6 +352,7 @@ fn connect(
     if establish(session, &mut opts, name, out, err)
         && let Some(new) = wizard
     {
+        session.set_safeguard(new.safeguard);
         remember(&new, &opts, err);
     }
 }
@@ -357,6 +360,7 @@ fn connect(
 /// Runs the interactive shell until the user quits. Returns the process exit code.
 pub fn run(mut session: Session) -> i32 {
     interrupt::install();
+    session.set_prompter(Box::new(safeguard::Modals));
     let mut line_editor = editor::build(session.schema(), session.dialect());
     match paths::ensure_app_dir() {
         Ok(_) => {

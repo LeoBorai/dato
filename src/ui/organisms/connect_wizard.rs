@@ -4,6 +4,7 @@ use crossterm::event::KeyEvent;
 use nu_ansi_term::{Color, Style};
 
 use crate::client::ConnectOptions;
+use crate::safeguard::Safeguard;
 use crate::server::Server;
 use crate::store::{SavedConnection, Tag};
 use crate::ui::atoms::{PasswordInput, PathInput, SelectList, TextInput};
@@ -29,6 +30,8 @@ pub struct NewConnection {
     pub name: Option<String>,
     /// Environment of the connection; `None` when left at `none`.
     pub tag: Option<Tag>,
+    /// Checks before `UPDATE` and `DELETE`; `None` when left at `none`.
+    pub safeguard: Option<Safeguard>,
     /// Keep the password with the saved connection.
     pub save_password: bool,
 }
@@ -114,6 +117,12 @@ impl ConnectWizard {
             ..Field::text("name", "Connection name", "")
         });
         specs.push(Field::choice("tag", "Environment tag", TAGS, "none"));
+        specs.push(Field::choice(
+            "safeguard",
+            "Safeguard level",
+            &["none", "1", "2"],
+            "none",
+        ));
         if has_password {
             let save = Field::choice("save_password", "Save password", &["no", "yes"], "no");
             // Vault provides the password: there is none to save.
@@ -136,6 +145,9 @@ impl ConnectWizard {
                         spec.placeholder = "unchanged";
                     }
                     "tag" => spec.default = original.tag.map_or("none", Tag::name).into(),
+                    "safeguard" => {
+                        spec.default = original.safeguard.map_or("none", Safeguard::name).into()
+                    }
                     "password" if stored => spec.placeholder = "unchanged",
                     "save_password" if stored => spec.default = "yes".into(),
                     _ => {}
@@ -246,6 +258,7 @@ impl Widget for ConnectWizard {
                                 opts,
                                 name: name.or_else(|| editing.map(|e| e.original.name.clone())),
                                 tag: Tag::parse(values.get("tag")),
+                                safeguard: Safeguard::parse(values.get("safeguard")),
                                 save_password: values.get("save_password") == "yes",
                             })
                         }
@@ -322,6 +335,10 @@ impl ConnectWizard {
                         out.push(f.render_done());
                     } else if i == *current {
                         out.extend(f.render());
+                        if specs[i].key == "safeguard" {
+                            let level = Safeguard::parse(&f.value());
+                            out.push(Line::styled(hint, format!("  {}", Safeguard::hint(level))));
+                        }
                     }
                 }
                 out
@@ -360,17 +377,20 @@ mod tests {
     #[test]
     fn sqlite_through_the_wizard() {
         let mut w = ConnectWizard::new();
-        // provider, file, then the connection name and tag left as they are.
-        let keys = [enter()]
-            .into_iter()
-            .chain(typed("app.db"))
-            .chain([enter(), enter(), enter()]);
+        // provider, file, then name, tag and safeguard left as they are.
+        let keys = [enter()].into_iter().chain(typed("app.db")).chain([
+            enter(),
+            enter(),
+            enter(),
+            enter(),
+        ]);
         assert_eq!(
             feed(&mut w, keys),
             Step::Done(NewConnection {
                 opts: ConnectOptions::sqlite(Some("app.db")),
                 name: None,
                 tag: None,
+                safeguard: None,
                 save_password: false,
             })
         );
@@ -384,11 +404,24 @@ mod tests {
         feed(&mut w, [enter(), enter()]);
         let s = screen(&w);
         assert!(s.contains("Environment tag: < none >"), "{s}");
-        let done = feed(&mut w, [key(KeyCode::Left), enter()]);
+        let done = feed(&mut w, [key(KeyCode::Left), enter(), enter()]);
         assert!(
             matches!(&done, Step::Done(n) if n.tag == Some(Tag::Production)),
             "{done:?}"
         );
+    }
+
+    #[test]
+    fn safeguard_hint_follows_the_choice() {
+        let mut w = ConnectWizard::new();
+        // provider, file, connection name, tag.
+        feed(&mut w, [enter()].into_iter().chain(typed("app.db")));
+        feed(&mut w, std::iter::repeat_n(enter(), 3));
+        for level in [None, Some(Safeguard::Confirm), Some(Safeguard::Password)] {
+            let s = screen(&w);
+            assert!(s.contains(Safeguard::hint(level)), "{s}");
+            feed(&mut w, [key(KeyCode::Right)]);
+        }
     }
 
     fn saved(password: Option<&str>, required: bool) -> SavedConnection {
@@ -406,6 +439,7 @@ mod tests {
             }),
             last_used: 1,
             tag: Some(Tag::Staging),
+            safeguard: None,
         }
     }
 
@@ -426,6 +460,7 @@ mod tests {
                     opts: original.opts,
                     name: Some("shop".into()),
                     tag: Some(Tag::Staging),
+                    safeguard: None,
                     save_password: password.is_some(),
                 })
             );
@@ -460,8 +495,11 @@ mod tests {
         feed(&mut w, std::iter::repeat_n(enter(), 6));
         feed(&mut w, [ctrl('u')]);
         feed(&mut w, typed("other"));
-        // name, tag, save password
-        assert_eq!(feed(&mut w, [enter(), enter(), enter()]), Step::Continue);
+        // name, tag, safeguard, save password
+        assert_eq!(
+            feed(&mut w, std::iter::repeat_n(enter(), 4)),
+            Step::Continue
+        );
         let s = screen(&w);
         assert!(
             s.contains("a connection called other already exists"),
@@ -490,10 +528,12 @@ mod tests {
         );
         feed(&mut w, [enter()]);
         feed(&mut w, typed("shop").into_iter().chain([enter()]));
-        // Connection name, tag, then "Save password" (no by default).
+        // Connection name, tag, safeguard, then "Save password" (no by default).
         feed(
             &mut w,
-            typed("shopify").into_iter().chain([enter(), enter()]),
+            typed("shopify")
+                .into_iter()
+                .chain([enter(), enter(), enter()]),
         );
         assert!(screen(&w).contains("Save password: (*) no  ( ) yes"));
         let done = feed(&mut w, [key(KeyCode::Right), enter()]);
@@ -513,6 +553,7 @@ mod tests {
                 }),
                 name: Some("shopify".into()),
                 tag: None,
+                safeguard: None,
                 save_password: true,
             })
         );
@@ -524,19 +565,7 @@ mod tests {
         feed(&mut w, [key(KeyCode::Down), enter(), enter(), ctrl('u')]);
         feed(&mut w, typed("nope"));
         assert_eq!(
-            feed(
-                &mut w,
-                [
-                    enter(),
-                    enter(),
-                    enter(),
-                    enter(),
-                    enter(),
-                    enter(),
-                    enter(),
-                    enter()
-                ]
-            ),
+            feed(&mut w, std::iter::repeat_n(enter(), 9)),
             Step::Continue
         );
         let s = screen(&w);
@@ -606,8 +635,8 @@ mod tests {
             "{}",
             screen(&w)
         );
-        // TLS mode, connection name, tag, save password.
-        let done = feed(&mut w, [enter(), enter(), enter(), enter()]);
+        // TLS mode, connection name, tag, safeguard, save password.
+        let done = feed(&mut w, std::iter::repeat_n(enter(), 5));
         assert_eq!(
             done,
             Step::Done(NewConnection {
@@ -624,6 +653,7 @@ mod tests {
                 }),
                 name: None,
                 tag: None,
+                safeguard: None,
                 save_password: false,
             })
         );
@@ -662,9 +692,9 @@ mod tests {
         feed(&mut w, [enter()]);
         assert!(screen(&w).contains("Username key: username"));
         feed(&mut w, [enter(), enter()]);
-        // database, TLS mode, connection name, tag; no "Save password".
+        // database, TLS mode, connection name, tag, safeguard; no "Save password".
         feed(&mut w, typed("shop").into_iter().chain([enter(), enter()]));
-        let done = feed(&mut w, [enter(), enter()]);
+        let done = feed(&mut w, [enter(), enter(), enter()]);
         assert!(!screen(&w).contains("Save password"), "{}", screen(&w));
         let Step::Done(NewConnection {
             opts: ConnectOptions::Psql(p),
@@ -700,7 +730,7 @@ mod tests {
         feed(&mut w, [enter(), enter(), enter()]);
         feed(&mut w, [key(KeyCode::Right), key(KeyCode::Right)]);
         assert!(screen(&w).contains("( ) disable  ( ) prefer  (*) require"));
-        let done = feed(&mut w, [enter(), enter(), enter(), enter()]);
+        let done = feed(&mut w, std::iter::repeat_n(enter(), 5));
         assert!(
             matches!(done, Step::Done(NewConnection { opts: ConnectOptions::Psql(p), .. }) if p.sslmode == SslMode::Require)
         );

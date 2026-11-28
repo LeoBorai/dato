@@ -75,6 +75,7 @@ fn edit(store: &mut Store, i: usize) -> std::io::Result<()> {
     };
     let name = new.name.as_deref().unwrap_or(&old);
     store.update(&old, name, &new.opts, new.tag, new.save_password);
+    store.set_safeguard(name, new.safeguard);
     store.save()
 }
 
@@ -108,10 +109,10 @@ pub fn run(session: &mut Session) {
                 return;
             }
         };
-        let (name, mut opts, wizard) = match choice {
+        let (name, mut opts, safeguard, wizard) = match choice {
             WelcomeChoice::Saved(i) => {
                 let c = &store.items()[i];
-                (c.name.clone(), c.opts.clone(), None)
+                (c.name.clone(), c.opts.clone(), c.safeguard, None)
             }
             WelcomeChoice::Edit(i) => {
                 let _ = execute!(out, Clear(ClearType::All), cursor::MoveTo(0, 0));
@@ -131,7 +132,8 @@ pub fn run(session: &mut Session) {
                 match term::run(&mut centered(ConnectWizard::new())) {
                     Ok(Some(new)) => {
                         let name = new.name.clone().unwrap_or_else(|| default_name(&new.opts));
-                        (name, new.opts, Some((new.tag, new.save_password)))
+                        let save = Some((new.tag, new.save_password));
+                        (name, new.opts, new.safeguard, save)
                     }
                     Ok(None) => continue,
                     Err(e) => {
@@ -150,10 +152,14 @@ pub fn run(session: &mut Session) {
             let _ = std::io::stdin().read_line(&mut String::new());
             continue;
         }
+        session.set_safeguard(safeguard);
         // Leave the shell at the top of a clean screen.
         let _ = execute!(out, Clear(ClearType::All), cursor::MoveTo(0, 0));
         match wizard {
-            Some((tag, keep)) => store.remember(&name, &opts, tag, keep, now()),
+            Some((tag, keep)) => {
+                store.remember(&name, &opts, tag, keep, now());
+                store.set_safeguard(&name, safeguard);
+            }
             None => store.touch(&name, now()),
         }
         if let Err(e) = store.save() {

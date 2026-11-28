@@ -12,6 +12,7 @@ use serde_json::{Map, Value, json};
 use crate::auth::vault::{SecretType, VaultConfig};
 use crate::client::psql::SslMode;
 use crate::client::{ConnectOptions, MySqlOptions, PsqlOptions};
+use crate::safeguard::Safeguard;
 use crate::server::Server;
 
 /// The environment a connection points at.
@@ -61,6 +62,8 @@ pub struct SavedConnection {
     pub last_used: u64,
     /// `None` for an untagged connection.
     pub tag: Option<Tag>,
+    /// `None` for a connection without safeguards.
+    pub safeguard: Option<Safeguard>,
 }
 
 impl SavedConnection {
@@ -99,6 +102,10 @@ impl SavedConnection {
         m.insert("server".into(), json!(self.server().name()));
         m.insert("last_used".into(), json!(self.last_used));
         m.insert("tag".into(), json!(self.tag.map(Tag::name)));
+        m.insert(
+            "safeguard".into(),
+            json!(self.safeguard.map(Safeguard::name)),
+        );
         match &self.opts {
             ConnectOptions::Sqlite { path } => {
                 m.insert("path".into(), json!(path));
@@ -174,6 +181,12 @@ impl SavedConnection {
             opts,
             last_used: v.get("last_used").and_then(Value::as_u64).unwrap_or(0),
             tag: text("tag").and_then(|t| Tag::parse(&t)),
+            // An unrecognized level gets the strictest one.
+            safeguard: v.get("safeguard").filter(|s| !s.is_null()).map(|s| {
+                s.as_str()
+                    .and_then(Safeguard::parse)
+                    .unwrap_or(Safeguard::Password)
+            }),
         })
     }
 }
@@ -353,6 +366,7 @@ impl Store {
                 opts: sanitize(opts, keep_password),
                 last_used: now,
                 tag,
+                safeguard: None,
             },
         );
         self.sort();
@@ -372,6 +386,13 @@ impl Store {
             c.name = name.to_string();
             c.opts = sanitize(opts, keep_password);
             c.tag = tag;
+        }
+    }
+
+    /// Sets the safeguard of the connection called `name`.
+    pub fn set_safeguard(&mut self, name: &str, safeguard: Option<Safeguard>) {
+        if let Some(c) = self.items.iter_mut().find(|c| c.name == name) {
+            c.safeguard = safeguard;
         }
     }
 
@@ -551,6 +572,23 @@ mod tests {
             let text = format!(r#"{{"name":"a","server":"sqlite"{tag}}}"#);
             let v: Value = serde_json::from_str(&text).unwrap();
             assert_eq!(SavedConnection::from_json(&v).unwrap().tag, None);
+        }
+    }
+
+    #[test]
+    fn safeguard_round_trips_and_fails_closed() {
+        let mut s = Store::empty(None);
+        s.remember("a", &pg("a", None), None, false, 1);
+        s.set_safeguard("a", Some(Safeguard::Confirm));
+        let json = s.items()[0].to_json();
+        assert_eq!(
+            SavedConnection::from_json(&json).as_ref(),
+            Some(&s.items()[0])
+        );
+        for (value, expected) in [("null", None), (r#""9""#, Some(Safeguard::Password))] {
+            let text = format!(r#"{{"name":"a","server":"sqlite","safeguard":{value}}}"#);
+            let v: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(SavedConnection::from_json(&v).unwrap().safeguard, expected);
         }
     }
 
