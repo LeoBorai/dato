@@ -23,11 +23,28 @@ const MAX_CANDIDATES: usize = 100;
 pub enum Kind {
     Table,
     View,
+    Schema,
     Column,
     Keyword,
     Command,
     Database,
     Format,
+}
+
+impl Kind {
+    /// Shown on the suggestion's row.
+    fn label(self) -> &'static str {
+        match self {
+            Kind::Table => "table",
+            Kind::View => "view",
+            Kind::Schema => "schema",
+            Kind::Column => "column",
+            Kind::Keyword => "keyword",
+            Kind::Command => "command",
+            Kind::Database => "database",
+            Kind::Format => "format",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,16 +174,28 @@ pub fn candidates(cache: &SchemaCache, line: &str, pos: usize) -> (usize, Vec<Ca
     let mut out = Vec::new();
     for expect in &ctx.expect {
         match expect {
-            Expect::Relations => out.extend(rank(
-                &prefix,
-                cache.relations.iter().map(|r| {
+            Expect::Relations => {
+                let relations = cache.relations.iter().map(|r| {
                     let (kind, label) = match r.kind {
                         RelationKind::Table => (Kind::Table, "table"),
                         RelationKind::View => (Kind::View, "view"),
                     };
                     (r.name.as_str(), kind, label.to_string())
-                }),
-            )),
+                });
+                // Schemas other than the default one, to qualify a table with.
+                let schemas = cache
+                    .qualified
+                    .iter()
+                    .filter(|(s, _)| server.qualifier() == Qualifier::Schema && s != "public")
+                    .map(|(s, _)| (s.as_str(), Kind::Schema, "schema".to_string()));
+                let mut hits = rank(&prefix, relations.chain(schemas));
+                // With nothing typed, schemas lead so a long table list cannot
+                // push them past the candidate limit.
+                if prefix.is_empty() {
+                    hits.sort_by_key(|c| c.kind != Kind::Schema);
+                }
+                out.extend(hits);
+            }
             // `db.` or `schema.`: that database's or schema's tables, unless the
             // name is also a relation or alias in scope.
             Expect::Columns
@@ -268,9 +297,13 @@ impl Completer for SqlCompleter {
         if self.after_space.load(Ordering::Relaxed) {
             found.retain(|c| c.kind == Kind::Format);
         }
+        // Names are padded so the types line up in a column.
+        let width = found.iter().map(|c| c.value.chars().count()).max();
+        let width = width.unwrap_or(0);
         let suggestions: Vec<Suggestion> = found
             .into_iter()
             .map(|c| Suggestion {
+                display_override: Some(format!("{:width$}  {}", c.value, c.kind.label())),
                 value: c.value,
                 description: Some(c.detail),
                 match_indices: (!c.matched.is_empty()).then_some(c.matched),
@@ -562,6 +595,19 @@ mod tests {
     }
 
     #[test]
+    fn every_row_shows_its_type_in_a_column() {
+        let mut comp = SqlCompleter::new(Arc::new(RwLock::new(cache())), Arc::default());
+        let r = comp.complete("select * from ", 14);
+        let rows: Vec<_> = r.suggestions().iter().map(|s| s.display_value()).collect();
+        assert_eq!(
+            rows,
+            ["big_orders  view", "customers   table", "orders      table"]
+        );
+        // Accepting a row inserts the name alone.
+        assert_eq!(r.suggestions()[0].value, "big_orders");
+    }
+
+    #[test]
     fn format_command_offers_every_format() {
         let mut all = Format::NAMES.to_vec();
         all.sort_unstable();
@@ -643,5 +689,25 @@ mod tests {
         assert!(values_in(&c, "select x.|").is_empty());
         assert!(values_in(&c, "retur|").contains(&"returning".to_string()));
         assert!(!values_in(&c, "prag|").contains(&"pragma".to_string()));
+    }
+
+    #[test]
+    fn schemas_are_offered_where_a_table_goes_on_postgres() {
+        let mut c = psql_cache();
+        c.qualified.push(("sales".into(), "refunds".into()));
+        // Once each, leading, and without the default schema.
+        assert_eq!(values_in(&c, "select * from |"), ["sales", "orders"]);
+        assert_eq!(values_in(&c, "select * from sa|"), ["sales"]);
+        assert_eq!(values_in(&c, "select * from orders join sa|"), ["sales"]);
+        let found = candidates(&c, "select * from sa", 16).1;
+        assert_eq!(
+            (found[0].kind, found[0].detail.as_str()),
+            (Kind::Schema, "schema")
+        );
+        // Only the default schema: nothing extra.
+        c.qualified.retain(|(s, _)| s == "public");
+        assert_eq!(values_in(&c, "select * from |"), ["orders"]);
+        // MySQL qualifiers are databases, not schemas.
+        assert_eq!(values_in(&mysql_cache(), "select * from |"), ["orders"]);
     }
 }
