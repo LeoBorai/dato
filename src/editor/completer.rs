@@ -31,6 +31,22 @@ pub enum Kind {
     Format,
 }
 
+impl Kind {
+    /// Shown on the suggestion's row.
+    fn label(self) -> &'static str {
+        match self {
+            Kind::Table => "table",
+            Kind::View => "view",
+            Kind::Schema => "schema",
+            Kind::Column => "column",
+            Kind::Keyword => "keyword",
+            Kind::Command => "command",
+            Kind::Database => "database",
+            Kind::Format => "format",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     pub value: String,
@@ -281,9 +297,13 @@ impl Completer for SqlCompleter {
         if self.after_space.load(Ordering::Relaxed) {
             found.retain(|c| c.kind == Kind::Format);
         }
+        // Names are padded so the types line up in a column.
+        let width = found.iter().map(|c| c.value.chars().count()).max();
+        let width = width.unwrap_or(0);
         let suggestions: Vec<Suggestion> = found
             .into_iter()
             .map(|c| Suggestion {
+                display_override: Some(format!("{:width$}  {}", c.value, c.kind.label())),
                 value: c.value,
                 description: Some(c.detail),
                 match_indices: (!c.matched.is_empty()).then_some(c.matched),
@@ -572,6 +592,19 @@ mod tests {
         assert_eq!(s[0].value, "orders");
         assert_eq!((s[0].span.start, s[0].span.end), (14, 17));
         assert_eq!(s[0].description.as_deref(), Some("table"));
+    }
+
+    #[test]
+    fn every_row_shows_its_type_in_a_column() {
+        let mut comp = SqlCompleter::new(Arc::new(RwLock::new(cache())), Arc::default());
+        let r = comp.complete("select * from ", 14);
+        let rows: Vec<_> = r.suggestions().iter().map(|s| s.display_value()).collect();
+        assert_eq!(
+            rows,
+            ["big_orders  view", "customers   table", "orders      table"]
+        );
+        // Accepting a row inserts the name alone.
+        assert_eq!(r.suggestions()[0].value, "big_orders");
     }
 
     #[test]
