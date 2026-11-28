@@ -5,10 +5,21 @@ use nu_ansi_term::{Color, Style};
 
 use crate::client::ConnectOptions;
 use crate::server::Server;
+use crate::store::{SavedConnection, Tag};
 use crate::ui::atoms::{PasswordInput, PathInput, SelectList, TextInput};
-use crate::ui::form::{AUTH_PASSWORD, is_visible};
+use crate::ui::form::{AUTH_PASSWORD, FieldError, form_values, is_visible};
 use crate::ui::molecules::{Choice, FieldInput, LabeledField};
 use crate::ui::{ConnectForm, Field, FieldValues, Line, Step, Widget, server_color, server_title};
+
+/// Choices of the "Environment tag" field.
+const TAGS: &[&str] = &[
+    "none",
+    "local",
+    "testing",
+    "development",
+    "staging",
+    "production",
+];
 
 /// What the wizard collected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,6 +27,8 @@ pub struct NewConnection {
     pub opts: ConnectOptions,
     /// Name to save the connection as; `None` when left empty.
     pub name: Option<String>,
+    /// Environment of the connection; `None` when left at `none`.
+    pub tag: Option<Tag>,
     /// Keep the password with the saved connection.
     pub save_password: bool,
 }
@@ -30,8 +43,16 @@ enum Stage {
     },
 }
 
+/// The saved connection being edited.
+struct Editing {
+    original: SavedConnection,
+    /// Names of the other saved connections.
+    taken: Vec<String>,
+}
+
 pub struct ConnectWizard {
     stage: Stage,
+    editing: Option<Editing>,
     /// Terminal `(columns, rows)`; when set, the wizard is drawn in its middle.
     size: Option<(usize, usize)>,
 }
@@ -53,7 +74,7 @@ fn field(spec: &Field) -> LabeledField {
     } else if spec.path {
         FieldInput::Path(PathInput::new(&spec.default).with_placeholder(spec.placeholder))
     } else if spec.secret {
-        FieldInput::Password(PasswordInput::new())
+        FieldInput::Password(PasswordInput::new().with_placeholder(spec.placeholder))
     } else {
         FieldInput::Text(TextInput::new(&spec.default).with_placeholder(spec.placeholder))
     };
@@ -64,8 +85,19 @@ impl ConnectWizard {
     pub fn new() -> Self {
         Self {
             stage: Stage::Server(SelectList::new(Server::ALL.iter().copied())),
+            editing: None,
             size: None,
         }
+    }
+
+    /// Edits `original`: its form, filled in with the current settings. The
+    /// name cannot be changed to one of `taken`.
+    pub fn edit(original: SavedConnection, taken: Vec<String>) -> Self {
+        let mut wizard = Self::new();
+        let server = original.server();
+        wizard.editing = Some(Editing { original, taken });
+        wizard.start_fields(server);
+        wizard
     }
 
     /// Draws the wizard in the middle of a terminal of `columns` x `rows`.
@@ -81,6 +113,7 @@ impl ConnectWizard {
             placeholder: "auto",
             ..Field::text("name", "Connection name", "")
         });
+        specs.push(Field::choice("tag", "Environment tag", TAGS, "none"));
         if has_password {
             let save = Field::choice("save_password", "Save password", &["no", "yes"], "no");
             // Vault provides the password: there is none to save.
@@ -90,6 +123,25 @@ impl ConnectWizard {
                 save
             });
         }
+        if let Some(Editing { original, .. }) = &self.editing {
+            let values = form_values(&original.opts);
+            let stored = stored_password(&original.opts).is_some();
+            for spec in &mut specs {
+                if let Some((_, v)) = values.0.iter().find(|(k, _)| *k == spec.key) {
+                    spec.default = v.clone();
+                }
+                match spec.key {
+                    "name" => {
+                        spec.default = original.name.clone();
+                        spec.placeholder = "unchanged";
+                    }
+                    "tag" => spec.default = original.tag.map_or("none", Tag::name).into(),
+                    "password" if stored => spec.placeholder = "unchanged",
+                    "save_password" if stored => spec.default = "yes".into(),
+                    _ => {}
+                }
+            }
+        }
         let fields = specs.iter().map(field).collect();
         self.stage = Stage::Fields {
             server,
@@ -97,6 +149,36 @@ impl ConnectWizard {
             fields,
             current: 0,
         };
+    }
+}
+
+fn stored_password(opts: &ConnectOptions) -> Option<&str> {
+    match opts {
+        ConnectOptions::Sqlite { .. } => None,
+        ConnectOptions::MySql(o) => o.password.as_deref(),
+        ConnectOptions::Psql(o) => o.password.as_deref(),
+    }
+}
+
+/// Carries over from `old` what the form does not show or was left empty: the
+/// password, the MySQL socket and the PostgreSQL root certificate.
+fn keep_unedited(new: &mut ConnectOptions, old: &ConnectOptions) {
+    match (new, old) {
+        (ConnectOptions::MySql(n), ConnectOptions::MySql(o)) => {
+            n.socket = o.socket.clone();
+            if n.vault.is_none() && n.password.is_none() {
+                n.password = o.password.clone();
+                n.password_required = o.password_required;
+            }
+        }
+        (ConnectOptions::Psql(n), ConnectOptions::Psql(o)) => {
+            n.sslrootcert = o.sslrootcert.clone();
+            if n.vault.is_none() && n.password.is_none() {
+                n.password = o.password.clone();
+                n.password_required = o.password_required;
+            }
+        }
+        _ => {}
     }
 }
 
@@ -143,13 +225,30 @@ impl Widget for ConnectWizard {
                             })
                             .collect(),
                     );
-                    match server.build(&values) {
-                        Ok(opts) => Step::Done(NewConnection {
-                            opts,
-                            name: Some(values.get("name").trim().to_string())
-                                .filter(|n| !n.is_empty()),
-                            save_password: values.get("save_password") == "yes",
-                        }),
+                    let name =
+                        Some(values.get("name").trim().to_string()).filter(|n| !n.is_empty());
+                    let editing = self.editing.as_ref();
+                    let built = server.build(&values).and_then(|opts| match &name {
+                        Some(n) if editing.is_some_and(|e| e.taken.contains(n)) => {
+                            Err(FieldError {
+                                key: "name",
+                                message: format!("a connection called {n} already exists"),
+                            })
+                        }
+                        _ => Ok(opts),
+                    });
+                    match built {
+                        Ok(mut opts) => {
+                            if let Some(e) = editing {
+                                keep_unedited(&mut opts, &e.original.opts);
+                            }
+                            Step::Done(NewConnection {
+                                opts,
+                                name: name.or_else(|| editing.map(|e| e.original.name.clone())),
+                                tag: Tag::parse(values.get("tag")),
+                                save_password: values.get("save_password") == "yes",
+                            })
+                        }
                         Err(e) => {
                             // Go back to the offending field and show the error.
                             if let Some(i) = specs.iter().position(|s| s.key == e.key) {
@@ -210,8 +309,12 @@ impl ConnectWizard {
                 current,
             } => {
                 let value = |j: usize| fields[j].value();
+                let heading = match &self.editing {
+                    Some(e) => format!("Edit {} ({server})", e.original.name),
+                    None => format!("Connect to {server}"),
+                };
                 let mut out = vec![
-                    Line::styled(title, format!("Connect to {server}")),
+                    Line::styled(title, heading),
                     Line::styled(hint, "  Enter for next field, Esc to cancel"),
                 ];
                 for (i, f) in fields.iter().enumerate() {
@@ -257,18 +360,112 @@ mod tests {
     #[test]
     fn sqlite_through_the_wizard() {
         let mut w = ConnectWizard::new();
-        // provider, file, then the connection name left empty.
+        // provider, file, then the connection name and tag left as they are.
         let keys = [enter()]
             .into_iter()
             .chain(typed("app.db"))
-            .chain([enter(), enter()]);
+            .chain([enter(), enter(), enter()]);
         assert_eq!(
             feed(&mut w, keys),
             Step::Done(NewConnection {
                 opts: ConnectOptions::sqlite(Some("app.db")),
                 name: None,
+                tag: None,
                 save_password: false,
             })
+        );
+    }
+
+    #[test]
+    fn tag_is_picked_with_the_arrow_keys() {
+        let mut w = ConnectWizard::new();
+        // provider, file, connection name.
+        feed(&mut w, [enter()].into_iter().chain(typed("app.db")));
+        feed(&mut w, [enter(), enter()]);
+        let s = screen(&w);
+        assert!(s.contains("Environment tag: < none >"), "{s}");
+        let done = feed(&mut w, [key(KeyCode::Left), enter()]);
+        assert!(
+            matches!(&done, Step::Done(n) if n.tag == Some(Tag::Production)),
+            "{done:?}"
+        );
+    }
+
+    fn saved(password: Option<&str>, required: bool) -> SavedConnection {
+        SavedConnection {
+            name: "shop".into(),
+            opts: ConnectOptions::MySql(MySqlOptions {
+                host: "db".into(),
+                port: 3307,
+                user: "app".into(),
+                password: password.map(String::from),
+                password_required: required,
+                socket: Some("/tmp/my.sock".into()),
+                database: Some("shop".into()),
+                vault: None,
+            }),
+            last_used: 1,
+            tag: Some(Tag::Staging),
+        }
+    }
+
+    /// Presses Enter until the wizard stops asking.
+    fn accept(w: &mut ConnectWizard) -> Step<NewConnection> {
+        feed(w, std::iter::repeat_n(enter(), 20))
+    }
+
+    #[test]
+    fn editing_without_changes_keeps_everything() {
+        for (password, required) in [(Some("secret"), false), (None, true), (None, false)] {
+            let original = saved(password, required);
+            let mut w = ConnectWizard::edit(original.clone(), vec![]);
+            assert!(screen(&w).contains("Edit shop (mysql)"), "{}", screen(&w));
+            assert_eq!(
+                accept(&mut w),
+                Step::Done(NewConnection {
+                    opts: original.opts,
+                    name: Some("shop".into()),
+                    tag: Some(Tag::Staging),
+                    save_password: password.is_some(),
+                })
+            );
+            assert!(!screen(&w).contains("secret"));
+        }
+    }
+
+    #[test]
+    fn editing_changes_a_field_and_the_password() {
+        let mut w = ConnectWizard::edit(saved(Some("secret"), false), vec![]);
+        feed(&mut w, [ctrl('u')]);
+        feed(&mut w, typed("other"));
+        // host, port, authentication, user
+        feed(&mut w, [enter(), enter(), enter(), enter()]);
+        assert!(
+            screen(&w).contains("Password:  unchanged"),
+            "{}",
+            screen(&w)
+        );
+        feed(&mut w, typed("new"));
+        let Step::Done(done) = accept(&mut w) else {
+            panic!("{}", screen(&w))
+        };
+        assert!(matches!(done.opts, ConnectOptions::MySql(o)
+            if o.host == "other" && o.password.as_deref() == Some("new")));
+    }
+
+    #[test]
+    fn editing_cannot_take_another_name() {
+        let mut w = ConnectWizard::edit(saved(None, false), vec!["other".into()]);
+        // host, port, authentication, user, password, database
+        feed(&mut w, std::iter::repeat_n(enter(), 6));
+        feed(&mut w, [ctrl('u')]);
+        feed(&mut w, typed("other"));
+        // name, tag, save password
+        assert_eq!(feed(&mut w, [enter(), enter(), enter()]), Step::Continue);
+        let s = screen(&w);
+        assert!(
+            s.contains("a connection called other already exists"),
+            "{s}"
         );
     }
 
@@ -293,8 +490,11 @@ mod tests {
         );
         feed(&mut w, [enter()]);
         feed(&mut w, typed("shop").into_iter().chain([enter()]));
-        // Connection name, then "Save password" (no by default).
-        feed(&mut w, typed("shopify").into_iter().chain([enter()]));
+        // Connection name, tag, then "Save password" (no by default).
+        feed(
+            &mut w,
+            typed("shopify").into_iter().chain([enter(), enter()]),
+        );
         assert!(screen(&w).contains("Save password: (*) no  ( ) yes"));
         let done = feed(&mut w, [key(KeyCode::Right), enter()]);
         assert!(!screen(&w).contains("secret"));
@@ -312,6 +512,7 @@ mod tests {
                     vault: None,
                 }),
                 name: Some("shopify".into()),
+                tag: None,
                 save_password: true,
             })
         );
@@ -326,6 +527,7 @@ mod tests {
             feed(
                 &mut w,
                 [
+                    enter(),
                     enter(),
                     enter(),
                     enter(),
@@ -404,8 +606,8 @@ mod tests {
             "{}",
             screen(&w)
         );
-        // TLS mode, connection name, save password.
-        let done = feed(&mut w, [enter(), enter(), enter()]);
+        // TLS mode, connection name, tag, save password.
+        let done = feed(&mut w, [enter(), enter(), enter(), enter()]);
         assert_eq!(
             done,
             Step::Done(NewConnection {
@@ -421,6 +623,7 @@ mod tests {
                     vault: None,
                 }),
                 name: None,
+                tag: None,
                 save_password: false,
             })
         );
@@ -459,9 +662,9 @@ mod tests {
         feed(&mut w, [enter()]);
         assert!(screen(&w).contains("Username key: username"));
         feed(&mut w, [enter(), enter()]);
-        // database, TLS mode, connection name; no "Save password".
+        // database, TLS mode, connection name, tag; no "Save password".
         feed(&mut w, typed("shop").into_iter().chain([enter(), enter()]));
-        let done = feed(&mut w, [enter()]);
+        let done = feed(&mut w, [enter(), enter()]);
         assert!(!screen(&w).contains("Save password"), "{}", screen(&w));
         let Step::Done(NewConnection {
             opts: ConnectOptions::Psql(p),
@@ -497,7 +700,7 @@ mod tests {
         feed(&mut w, [enter(), enter(), enter()]);
         feed(&mut w, [key(KeyCode::Right), key(KeyCode::Right)]);
         assert!(screen(&w).contains("( ) disable  ( ) prefer  (*) require"));
-        let done = feed(&mut w, [enter(), enter(), enter()]);
+        let done = feed(&mut w, [enter(), enter(), enter(), enter()]);
         assert!(
             matches!(done, Step::Done(NewConnection { opts: ConnectOptions::Psql(p), .. }) if p.sslmode == SslMode::Require)
         );

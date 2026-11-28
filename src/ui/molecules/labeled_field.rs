@@ -6,6 +6,9 @@ use nu_ansi_term::{Color, Style};
 use crate::ui::atoms::{PasswordInput, PathInput, TextInput};
 use crate::ui::{Line, Step, Widget, is_cancel};
 
+/// Widest list of options shown in full; a wider one would wrap the line.
+const MAX_LIST_WIDTH: usize = 60;
+
 /// One of a few fixed values, picked with the arrow keys.
 #[derive(Debug, Clone)]
 pub struct Choice {
@@ -46,7 +49,8 @@ impl Choice {
         Step::Continue
     }
 
-    /// `(*) a  ( ) b  ( ) c`, or just the picked value when `done`.
+    /// `(*) a  ( ) b  ( ) c`, or just the picked value when `done`. A list
+    /// wider than [`MAX_LIST_WIDTH`] shows as `< a >`.
     fn render_value(&self, done: bool) -> Line {
         if done {
             return Line::plain(self.value());
@@ -58,6 +62,11 @@ impl Choice {
             .map(|(i, o)| format!("({}) {o}", if i == self.selected { '*' } else { ' ' }))
             .collect::<Vec<_>>()
             .join("  ");
+        let text = if text.len() > MAX_LIST_WIDTH {
+            format!("< {} >", self.value())
+        } else {
+            text
+        };
         Line::styled(Style::new().fg(Color::Cyan), text)
     }
 }

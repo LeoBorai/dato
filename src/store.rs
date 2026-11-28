@@ -14,6 +14,42 @@ use crate::client::psql::SslMode;
 use crate::client::{ConnectOptions, MySqlOptions, PsqlOptions};
 use crate::server::Server;
 
+/// The environment a connection points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tag {
+    Local,
+    Testing,
+    Development,
+    Staging,
+    Production,
+}
+
+impl Tag {
+    const ALL: [Tag; 5] = [
+        Tag::Local,
+        Tag::Testing,
+        Tag::Development,
+        Tag::Staging,
+        Tag::Production,
+    ];
+
+    /// The name stored in the file and shown to the user.
+    pub fn name(self) -> &'static str {
+        match self {
+            Tag::Local => "local",
+            Tag::Testing => "testing",
+            Tag::Development => "development",
+            Tag::Staging => "staging",
+            Tag::Production => "production",
+        }
+    }
+
+    /// The tag called `name`; `None` for any other value.
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.name() == name)
+    }
+}
+
 /// One entry of the saved connections list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedConnection {
@@ -23,6 +59,8 @@ pub struct SavedConnection {
     pub opts: ConnectOptions,
     /// Seconds since the Unix epoch.
     pub last_used: u64,
+    /// `None` for an untagged connection.
+    pub tag: Option<Tag>,
 }
 
 impl SavedConnection {
@@ -60,6 +98,7 @@ impl SavedConnection {
         m.insert("name".into(), json!(self.name));
         m.insert("server".into(), json!(self.server().name()));
         m.insert("last_used".into(), json!(self.last_used));
+        m.insert("tag".into(), json!(self.tag.map(Tag::name)));
         match &self.opts {
             ConnectOptions::Sqlite { path } => {
                 m.insert("path".into(), json!(path));
@@ -134,6 +173,7 @@ impl SavedConnection {
             name: text("name")?,
             opts,
             last_used: v.get("last_used").and_then(Value::as_u64).unwrap_or(0),
+            tag: text("tag").and_then(|t| Tag::parse(&t)),
         })
     }
 }
@@ -297,7 +337,14 @@ impl Store {
     }
 
     /// Adds or replaces the connection called `name`, used at `now`.
-    pub fn remember(&mut self, name: &str, opts: &ConnectOptions, keep_password: bool, now: u64) {
+    pub fn remember(
+        &mut self,
+        name: &str,
+        opts: &ConnectOptions,
+        tag: Option<Tag>,
+        keep_password: bool,
+        now: u64,
+    ) {
         self.items.retain(|c| c.name != name);
         self.items.insert(
             0,
@@ -305,9 +352,27 @@ impl Store {
                 name: name.to_string(),
                 opts: sanitize(opts, keep_password),
                 last_used: now,
+                tag,
             },
         );
         self.sort();
+    }
+
+    /// Replaces the connection called `old`, which may be renamed to `name`.
+    /// When it was last used does not change.
+    pub fn update(
+        &mut self,
+        old: &str,
+        name: &str,
+        opts: &ConnectOptions,
+        tag: Option<Tag>,
+        keep_password: bool,
+    ) {
+        if let Some(c) = self.items.iter_mut().find(|c| c.name == old) {
+            c.name = name.to_string();
+            c.opts = sanitize(opts, keep_password);
+            c.tag = tag;
+        }
     }
 
     /// Marks the connection called `name` as used at `now`.
@@ -363,9 +428,9 @@ mod tests {
     #[test]
     fn password_is_dropped_unless_kept() {
         let mut s = Store::empty(None);
-        s.remember("a", &pg("shop", Some("pw")), false, 1);
-        s.remember("b", &pg("shop", Some("pw")), true, 2);
-        s.remember("c", &pg("shop", None), false, 3);
+        s.remember("a", &pg("shop", Some("pw")), None, false, 1);
+        s.remember("b", &pg("shop", Some("pw")), None, true, 2);
+        s.remember("c", &pg("shop", None), None, false, 3);
         let get = |n: &str| match &s.items().iter().find(|c| c.name == n).unwrap().opts {
             ConnectOptions::Psql(o) => (o.password.clone(), o.password_required),
             _ => unreachable!(),
@@ -378,14 +443,14 @@ mod tests {
     #[test]
     fn most_recently_used_first() {
         let mut s = Store::empty(None);
-        s.remember("a", &pg("a", None), false, 1);
-        s.remember("b", &pg("b", None), false, 2);
+        s.remember("a", &pg("a", None), None, false, 1);
+        s.remember("b", &pg("b", None), None, false, 2);
         let names = |s: &Store| s.items().iter().map(|c| c.name.clone()).collect::<Vec<_>>();
         assert_eq!(names(&s), ["b", "a"]);
         s.touch("a", 3);
         assert_eq!(names(&s), ["a", "b"]);
         // Same name replaces instead of duplicating.
-        s.remember("b", &pg("b2", None), false, 4);
+        s.remember("b", &pg("b2", None), None, false, 4);
         assert_eq!(names(&s), ["b", "a"]);
         assert_eq!(s.items().len(), 2);
     }
@@ -396,8 +461,14 @@ mod tests {
         let path = dir.path().join("connections.json");
         assert!(Store::load(path.clone()).unwrap().items().is_empty());
         let mut s = Store::empty(Some(path.clone()));
-        s.remember("shop", &pg("shop", Some("pw")), false, 5);
-        s.remember("lite", &ConnectOptions::sqlite(Some("app.db")), false, 7);
+        s.remember("shop", &pg("shop", Some("pw")), None, false, 5);
+        s.remember(
+            "lite",
+            &ConnectOptions::sqlite(Some("app.db")),
+            None,
+            false,
+            7,
+        );
         s.remember(
             "my",
             &ConnectOptions::MySql(MySqlOptions {
@@ -405,6 +476,7 @@ mod tests {
                 database: Some("d".into()),
                 ..Default::default()
             }),
+            None,
             false,
             6,
         );
@@ -443,7 +515,7 @@ mod tests {
             ..Default::default()
         });
         let mut s = Store::empty(Some(path.clone()));
-        s.remember("v", &opts, false, 1);
+        s.remember("v", &opts, None, false, 1);
         s.save().unwrap();
         let loaded = Store::load(path).unwrap();
         assert_eq!(loaded.items(), s.items());
@@ -452,6 +524,48 @@ mod tests {
         assert_eq!(c.detail(), "vault@localhost:5432");
         assert_eq!(prompt_detail(&c.opts), "vault@localhost:5432");
         assert_eq!(c.opts.needs_password(), None);
+    }
+
+    #[test]
+    fn tags_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("connections.json");
+        let mut s = Store::empty(Some(path.clone()));
+        for (i, tag) in Tag::ALL.into_iter().enumerate() {
+            let name = tag.name();
+            s.remember(name, &pg(name, None), Some(tag), false, i as u64);
+        }
+        s.remember("untagged", &pg("u", None), None, false, 9);
+        s.save().unwrap();
+        let loaded = Store::load(path).unwrap();
+        assert_eq!(loaded.items(), s.items());
+        for c in loaded.items() {
+            let expected = Some(c.name.as_str()).filter(|n| *n != "untagged");
+            assert_eq!(c.tag.map(Tag::name), expected);
+        }
+    }
+
+    #[test]
+    fn missing_or_unknown_tag_is_untagged() {
+        for tag in ["", r#","tag":null"#, r#","tag":"qa""#] {
+            let text = format!(r#"{{"name":"a","server":"sqlite"{tag}}}"#);
+            let v: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(SavedConnection::from_json(&v).unwrap().tag, None);
+        }
+    }
+
+    #[test]
+    fn update_renames_in_place() {
+        let mut s = Store::empty(None);
+        s.remember("a", &pg("a", None), None, false, 1);
+        s.remember("b", &pg("b", None), None, false, 2);
+        s.update("a", "c", &pg("c", Some("pw")), Some(Tag::Staging), false);
+        let c = &s.items()[1];
+        assert_eq!((c.name.as_str(), c.last_used), ("c", 1));
+        assert_eq!(c.tag, Some(Tag::Staging));
+        assert!(matches!(&c.opts, ConnectOptions::Psql(o)
+            if o.password.is_none() && o.password_required));
+        assert_eq!(s.items().len(), 2);
     }
 
     #[test]

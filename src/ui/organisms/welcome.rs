@@ -5,7 +5,8 @@ use nu_ansi_term::{Color, Style};
 use unicode_width::UnicodeWidthStr;
 
 use crate::server::Server;
-use crate::ui::{Line, Step, Widget, is_cancel, server_color};
+use crate::store::Tag;
+use crate::ui::{Line, Step, Widget, is_cancel, server_color, tag_color};
 
 const LOGO: &str = "\
 ██████╗  █████╗ ████████╗ ██████╗
@@ -45,6 +46,7 @@ pub struct WelcomeItem {
     /// `user@host:port` or a file.
     pub detail: String,
     pub server: Server,
+    pub tag: Option<Tag>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +55,8 @@ pub enum WelcomeChoice {
     New,
     /// Index into the items given to [`Welcome::new`].
     Saved(usize),
+    /// Edit the saved connection at this index.
+    Edit(usize),
 }
 
 pub struct Welcome {
@@ -113,6 +117,9 @@ impl Widget for Welcome {
             KeyCode::Home => self.selected = 0,
             KeyCode::End => self.selected = n - 1,
             KeyCode::Enter => return Step::Done(self.choice()),
+            KeyCode::Char('e') if self.selected > 0 => {
+                return Step::Done(WelcomeChoice::Edit(self.selected - 1));
+            }
             _ => {}
         }
         Step::Continue
@@ -176,6 +183,10 @@ impl Welcome {
                     Style::new().fg(Color::DarkGray),
                     format!("({})", item.detail),
                 );
+                if let Some(tag) = item.tag {
+                    let style = Style::new().fg(tag_color(tag));
+                    line.push(style, format!(" [{}]", tag.name()));
+                }
                 line
             })
             .collect();
@@ -200,7 +211,7 @@ impl Welcome {
         out.push(Line::styled(border, format!("└─{}─┘", "─".repeat(width))));
         let hint = vec![Line::styled(
             border,
-            "Up/Down to choose, Enter to select, Esc for an empty shell",
+            "Up/Down to choose, Enter to select, e to edit, Esc for an empty shell",
         )];
         (logo, out, hint)
     }
@@ -216,6 +227,7 @@ mod tests {
             name: name.into(),
             detail: "username@localhost:5432".into(),
             server,
+            tag: None,
         }
     }
 
@@ -260,6 +272,30 @@ mod tests {
             colors,
             [Some(Color::Cyan), Some(Color::Yellow), Some(Color::Purple)]
         );
+    }
+
+    #[test]
+    fn tags_are_shown_in_their_color() {
+        for (tag, color) in [
+            (Tag::Local, Color::DarkGray),
+            (Tag::Testing, Color::Cyan),
+            (Tag::Development, Color::Blue),
+            (Tag::Staging, Color::Green),
+            (Tag::Production, Color::Red),
+        ] {
+            let w = Welcome::new(vec![WelcomeItem {
+                tag: Some(tag),
+                ..item("a", Server::Sqlite)
+            }]);
+            let label = format!(" [{}]", tag.name());
+            let found = w
+                .render()
+                .iter()
+                .flat_map(|l| l.0.iter())
+                .find(|(_, t)| *t == label)
+                .map(|(s, _)| s.foreground);
+            assert_eq!(found, Some(Some(color)), "{label}");
+        }
     }
 
     #[test]
@@ -335,6 +371,17 @@ mod tests {
         assert!(
             logo.iter().all(|m| *m == logo[0]) && logo[0] > 20,
             "{logo:?}"
+        );
+    }
+
+    #[test]
+    fn e_edits_only_a_saved_connection() {
+        let items = vec![item("a", Server::Sqlite)];
+        let e = key(KeyCode::Char('e'));
+        assert_eq!(feed(&mut Welcome::new(items.clone()), [e]), Step::Continue);
+        assert_eq!(
+            feed(&mut Welcome::new(items), [key(KeyCode::Down), e]),
+            Step::Done(WelcomeChoice::Edit(0))
         );
     }
 

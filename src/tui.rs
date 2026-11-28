@@ -310,7 +310,7 @@ fn establish(
 fn remember(new: &NewConnection, opts: &ConnectOptions, err: &mut dyn Write) {
     let mut store = welcome::open_store(err);
     let name = new.name.clone().unwrap_or_else(|| default_name(opts));
-    store.remember(&name, opts, new.save_password, welcome::now());
+    store.remember(&name, opts, new.tag, new.save_password, welcome::now());
     if let Err(e) = store.save() {
         let _ = writeln!(err, "warning: cannot save the connection: {e}");
     }
